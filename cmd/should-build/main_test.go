@@ -1,0 +1,187 @@
+package main
+
+import (
+	"bytes"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func gitSHA(t *testing.T, dir, ref string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", ref)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// setupTestRepo creates a git repo with a should-build.yaml and two commits.
+// Returns (dir, baseSHA, headSHA).
+func setupTestRepo(t *testing.T) (string, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	gitRun(t, dir, "init")
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+	gitRun(t, dir, "config", "user.name", "Test")
+
+	writeFile(t, filepath.Join(dir, "should-build.yaml"), `
+global:
+  ignore:
+    - "docs/**"
+  trigger_all:
+    - "go.mod"
+unknown_file: ignore
+targets:
+  api:
+    lang: none
+    include:
+      - "cmd/api/**"
+  web:
+    lang: none
+    include:
+      - "web/**"
+`)
+	writeFile(t, filepath.Join(dir, "cmd", "api", "main.go"), "package main")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "initial")
+	base := gitSHA(t, dir, "HEAD")
+
+	writeFile(t, filepath.Join(dir, "cmd", "api", "handler.go"), "package main")
+	writeFile(t, filepath.Join(dir, "docs", "readme.md"), "# docs")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "changes")
+	head := gitSHA(t, dir, "HEAD")
+
+	return dir, base, head
+}
+
+// TestRunTable tests the full CLI run function with table output.
+func TestRunTable(t *testing.T) {
+	dir, base, head := setupTestRepo(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--repo", dir, base, head}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr.String())
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "api") || !strings.Contains(out, "yes") {
+		t.Errorf("expected api=yes in output:\n%s", out)
+	}
+	if !strings.Contains(out, "web") || !strings.Contains(out, "no") {
+		t.Errorf("expected web=no in output:\n%s", out)
+	}
+}
+
+// TestRunJSON tests JSON output format.
+func TestRunJSON(t *testing.T) {
+	dir, base, head := setupTestRepo(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--repo", dir, "--json", base, head}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"build": true`) {
+		t.Errorf("expected JSON with build:true:\n%s", stdout.String())
+	}
+}
+
+// TestRunQuietBuild tests quiet mode when a target needs rebuilding.
+func TestRunQuietBuild(t *testing.T) {
+	dir, base, head := setupTestRepo(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--repo", dir, "--quiet", base, head}, &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("expected exit 1 (rebuild needed), got %d", code)
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("quiet mode should produce no stdout, got: %s", stdout.String())
+	}
+}
+
+// TestRunQuietNoBuild tests quiet mode when nothing needs rebuilding.
+func TestRunQuietNoBuild(t *testing.T) {
+	dir, base, head := setupTestRepo(t)
+
+	// Only web target; docs/readme.md is ignored, so nothing triggers web.
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--repo", dir, "--quiet", "--target", "web", base, head}, &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("expected exit 0 (nothing to rebuild), got %d", code)
+	}
+}
+
+// TestRunTargetFilter tests --target flag filters to specific targets.
+func TestRunTargetFilter(t *testing.T) {
+	dir, base, head := setupTestRepo(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--repo", dir, "--json", "--target", "web", base, head}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), `"api"`) {
+		t.Error("--target web should exclude api from output")
+	}
+}
+
+// TestRunUnknownTarget tests that an unknown --target flag returns exit 2.
+func TestRunUnknownTarget(t *testing.T) {
+	dir, base, head := setupTestRepo(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--repo", dir, "--target", "nonexistent", base, head}, &stdout, &stderr)
+	if code != 2 {
+		t.Errorf("expected exit 2 for unknown target, got %d", code)
+	}
+}
+
+// TestRunMissingArgs tests that missing positional args returns exit 2.
+func TestRunMissingArgs(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(nil, &stdout, &stderr)
+	if code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+// TestRunMissingConfig tests that a missing config file returns exit 2.
+func TestRunMissingConfig(t *testing.T) {
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--repo", dir, "abc", "def"}, &stdout, &stderr)
+	if code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "reading config") {
+		t.Errorf("expected config error, got: %s", stderr.String())
+	}
+}
