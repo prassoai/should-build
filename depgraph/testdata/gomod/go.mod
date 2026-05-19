@@ -1,3 +1,3 @@
 module example.com/testmod
 
-go 1.23
+go 1.25
