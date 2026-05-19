@@ -2,7 +2,10 @@ package match
 
 import "testing"
 
-func TestMatch(t *testing.T) {
+// TestMatchAnyGlobs exercises glob semantics through MatchAny (the only
+// matching function in the public API). Each case uses a single-element
+// pattern slice so the test isolates one glob behavior at a time.
+func TestMatchAnyGlobs(t *testing.T) {
 	tests := []struct {
 		name    string
 		pattern string
@@ -40,12 +43,12 @@ func TestMatch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := Match(tt.pattern, tt.path)
+			got, _, err := MatchAny([]string{tt.pattern}, tt.path)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if got != tt.want {
-				t.Errorf("Match(%q, %q) = %v, want %v", tt.pattern, tt.path, got, tt.want)
+				t.Errorf("MatchAny([%q], %q) = %v, want %v", tt.pattern, tt.path, got, tt.want)
 			}
 		})
 	}
@@ -70,8 +73,9 @@ func TestExpandTarget(t *testing.T) {
 	}
 }
 
-// TestMatchAny verifies short-circuit behavior and pattern reporting.
-func TestMatchAny(t *testing.T) {
+// TestMatchAnyShortCircuit verifies that MatchAny returns the first matching
+// pattern and stops.
+func TestMatchAnyShortCircuit(t *testing.T) {
 	patterns := []string{"docs/**", "**/*.md", "go.mod"}
 
 	// Matches first pattern.

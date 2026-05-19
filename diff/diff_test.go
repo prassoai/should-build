@@ -151,6 +151,30 @@ func TestChangedNoChanges(t *testing.T) {
 	}
 }
 
+// TestChangedRename verifies that a renamed file reports both old and new
+// paths (--no-renames disables rename detection so both appear).
+func TestChangedRename(t *testing.T) {
+	dir := initRepo(t)
+	writeFile(t, filepath.Join(dir, "old.go"), "package main")
+	run(t, dir, "git", "add", ".")
+	run(t, dir, "git", "commit", "-m", "add old")
+	base := sha(t, dir, "HEAD")
+
+	run(t, dir, "git", "mv", "old.go", "new.go")
+	run(t, dir, "git", "commit", "-m", "rename")
+	head := sha(t, dir, "HEAD")
+
+	got, err := Changed(dir, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(got)
+	want := []string{"new.go", "old.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v (both old and new paths)", got, want)
+	}
+}
+
 // TestChangedBadRef verifies that an invalid ref returns an error.
 func TestChangedBadRef(t *testing.T) {
 	dir := initRepo(t)

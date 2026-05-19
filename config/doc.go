@@ -8,7 +8,17 @@
 //   - Per-target rules (include, exclude) with {target} template expansion.
 //   - An unknown_file fallback policy for files matching no rule.
 //
+// # Defaults applied by Canonicalize
+//
+// unknown_file defaults to "trigger_all" when the field is empty or absent.
+// This is the safe default: unrecognized files rebuild everything.
+//
+// lang defaults to "go" when the target has a path set, and "none" otherwise.
+// A target with lang "go" runs the Go dependency-graph analyzer. A target
+// with lang "none" relies solely on include/exclude patterns.
+//
 // Load reads and validates a file. Parse does the same from raw bytes.
-// Both apply defaults (unknown_file defaults to "trigger_all", lang defaults
-// based on whether path is set) and validate all glob patterns.
+// Canonicalize applies defaults and validates a pre-built Config struct.
+// All three functions validate every glob pattern at call time so that
+// pattern matching at evaluation time cannot fail.
 package config

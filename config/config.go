@@ -40,58 +40,63 @@ func Load(path string) (*Config, error) {
 
 // Parse parses and validates config from raw YAML bytes.
 func Parse(data []byte) (*Config, error) {
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	var raw Config
+	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
-	if err := validate(&cfg); err != nil {
-		return nil, err
-	}
-	return &cfg, nil
+	return Canonicalize(raw)
 }
 
-func validate(cfg *Config) error {
-	// Validate and default unknown_file.
+// Canonicalize validates cfg and returns a new Config with defaults applied.
+//
+// Defaults:
+//   - unknown_file defaults to "trigger_all" when empty.
+//   - lang defaults to "go" when path is set, "none" otherwise.
+//
+// All glob patterns are validated. An error is returned for any invalid
+// field value or malformed pattern.
+func Canonicalize(cfg Config) (*Config, error) {
 	switch cfg.UnknownFile {
 	case "":
 		cfg.UnknownFile = "trigger_all"
 	case "trigger_all", "ignore":
 		// valid
 	default:
-		return fmt.Errorf("unknown_file: must be %q or %q, got %q", "trigger_all", "ignore", cfg.UnknownFile)
+		return nil, fmt.Errorf("unknown_file: must be %q or %q, got %q", "trigger_all", "ignore", cfg.UnknownFile)
 	}
 
 	if len(cfg.Targets) == 0 {
-		return fmt.Errorf("config must define at least one target")
+		return nil, fmt.Errorf("config must define at least one target")
 	}
 
-	// Validate global patterns.
 	if err := validatePatterns(cfg.Global.Ignore); err != nil {
-		return fmt.Errorf("global.ignore: %w", err)
+		return nil, fmt.Errorf("global.ignore: %w", err)
 	}
 	if err := validatePatterns(cfg.Global.TriggerAll); err != nil {
-		return fmt.Errorf("global.trigger_all: %w", err)
+		return nil, fmt.Errorf("global.trigger_all: %w", err)
 	}
 
-	// Validate and default each target.
+	targets := make(map[string]Target, len(cfg.Targets))
 	for name, t := range cfg.Targets {
-		if err := validateTarget(name, &t); err != nil {
-			return err
+		ct, err := canonicalizeTarget(name, t)
+		if err != nil {
+			return nil, err
 		}
-		cfg.Targets[name] = t
+		targets[name] = ct
 	}
-	return nil
+	cfg.Targets = targets
+	return &cfg, nil
 }
 
-func validateTarget(name string, t *Target) error {
+func canonicalizeTarget(name string, t Target) (Target, error) {
 	switch t.Lang {
 	case "", "go", "none":
 		// valid; apply defaults below
 	default:
-		return fmt.Errorf("target %q: lang must be %q or %q, got %q", name, "go", "none", t.Lang)
+		return Target{}, fmt.Errorf("target %q: lang must be %q or %q, got %q", name, "go", "none", t.Lang)
 	}
 
-	// Default lang based on path presence.
+	// Default lang: "go" when path is set, "none" otherwise.
 	if t.Lang == "" {
 		if t.Path != "" {
 			t.Lang = "go"
@@ -100,20 +105,19 @@ func validateTarget(name string, t *Target) error {
 		}
 	}
 
-	// Expand {target} then validate patterns.
 	for _, p := range t.Include {
 		expanded := match.ExpandTarget(p, name)
 		if err := match.ValidatePattern(expanded); err != nil {
-			return fmt.Errorf("target %q include: %w", name, err)
+			return Target{}, fmt.Errorf("target %q include: %w", name, err)
 		}
 	}
 	for _, p := range t.Exclude {
 		expanded := match.ExpandTarget(p, name)
 		if err := match.ValidatePattern(expanded); err != nil {
-			return fmt.Errorf("target %q exclude: %w", name, err)
+			return Target{}, fmt.Errorf("target %q exclude: %w", name, err)
 		}
 	}
-	return nil
+	return t, nil
 }
 
 func validatePatterns(patterns []string) error {

@@ -108,8 +108,50 @@ func TestRunJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code %d, stderr: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), `"build": true`) {
-		t.Errorf("expected JSON with build:true:\n%s", stdout.String())
+	out := stdout.String()
+	if !strings.Contains(out, `"build": true`) {
+		t.Errorf("expected JSON with build:true:\n%s", out)
+	}
+	// Non-verbose JSON should not contain the "rule" field.
+	if strings.Contains(out, `"rule"`) {
+		t.Errorf("non-verbose JSON should omit rule field:\n%s", out)
+	}
+}
+
+// TestRunJSONVerbose verifies that --json --verbose preserves the Rule field.
+func TestRunJSONVerbose(t *testing.T) {
+	dir, base, head := setupTestRepo(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--repo", dir, "--json", "--verbose", base, head}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, `"rule"`) {
+		t.Errorf("verbose JSON should include rule field:\n%s", out)
+	}
+	if !strings.Contains(out, `cmd/api/**`) {
+		t.Errorf("verbose JSON should show the matching glob pattern:\n%s", out)
+	}
+}
+
+// TestRunTableVerbose verifies that --verbose shows per-file rows with rules.
+func TestRunTableVerbose(t *testing.T) {
+	dir, base, head := setupTestRepo(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--repo", dir, "--verbose", base, head}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	// Verbose table should include the rule pattern.
+	if !strings.Contains(out, "cmd/api/**") {
+		t.Errorf("verbose table should show glob rule:\n%s", out)
+	}
+	if !strings.Contains(out, "include") {
+		t.Errorf("verbose table should show reason:\n%s", out)
 	}
 }
 
@@ -183,5 +225,45 @@ func TestRunMissingConfig(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "reading config") {
 		t.Errorf("expected config error, got: %s", stderr.String())
+	}
+}
+
+// TestRunTargetTemplate verifies that {target} template expansion works
+// end-to-end through the CLI.
+func TestRunTargetTemplate(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init")
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+	gitRun(t, dir, "config", "user.name", "Test")
+
+	writeFile(t, filepath.Join(dir, "should-build.yaml"), `
+targets:
+  myservice:
+    lang: none
+    include:
+      - "targets/{target}/conf/{target}-*.hjson"
+unknown_file: ignore
+`)
+	writeFile(t, filepath.Join(dir, ".gitkeep"), "")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "initial")
+	base := gitSHA(t, dir, "HEAD")
+
+	writeFile(t, filepath.Join(dir, "targets", "myservice", "conf", "myservice-prod.hjson"), "{}")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "add config")
+	head := gitSHA(t, dir, "HEAD")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--repo", dir, "--json", base, head}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, `"build": true`) {
+		t.Errorf("expected {target} expansion to trigger build:\n%s", out)
+	}
+	if !strings.Contains(out, "myservice-prod.hjson") {
+		t.Errorf("expected hjson file in output:\n%s", out)
 	}
 }

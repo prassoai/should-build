@@ -71,7 +71,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	// Filter to requested targets.
+	// Filter to requested targets without mutating the loaded config.
 	if len(targets) > 0 {
 		filtered := make(map[string]config.Target, len(targets))
 		for _, name := range targets {
@@ -82,7 +82,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 			}
 			filtered[name] = t
 		}
-		cfg.Targets = filtered
+		cfg = &config.Config{
+			Global:      cfg.Global,
+			UnknownFile: cfg.UnknownFile,
+			Targets:     filtered,
+		}
 	}
 
 	changed, err := diff.Changed(*repoPath, baseRef, headRef)
@@ -92,6 +96,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Compute dependency graphs for Go targets.
+	// Failure is a hard error — with the default unknown_file: trigger_all,
+	// silently skipping would hide misconfiguration behind unnecessary rebuilds.
 	var analyzer depgraph.Go
 	deps := make(map[string][]string)
 	for name, t := range cfg.Targets {
@@ -100,8 +106,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		d, err := analyzer.Deps(*repoPath, t.Path)
 		if err != nil {
-			fmt.Fprintf(stderr, "warning: dep graph for %s: %v\n", name, err)
-			continue
+			fmt.Fprintf(stderr, "error: dep graph for %s: %v\n", name, err)
+			return 2
 		}
 		deps[name] = d
 	}
@@ -124,20 +130,30 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func writeJSON(stdout, stderr io.Writer, results []eval.Result, verbose bool) int {
+	out := results
 	if !verbose {
-		for i := range results {
-			for j := range results[i].Files {
-				results[i].Files[j].Rule = ""
-			}
-		}
+		out = stripRules(results)
 	}
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(results); err != nil {
+	if err := enc.Encode(out); err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
 	}
 	return 0
+}
+
+// stripRules returns a copy of results with Rule fields cleared.
+func stripRules(results []eval.Result) []eval.Result {
+	out := make([]eval.Result, len(results))
+	for i, r := range results {
+		files := make([]eval.FileMatch, len(r.Files))
+		for j, fm := range r.Files {
+			files[j] = eval.FileMatch{Path: fm.Path, Reason: fm.Reason}
+		}
+		out[i] = eval.Result{Target: r.Target, Build: r.Build, Files: files}
+	}
+	return out
 }
 
 func writeTable(w io.Writer, results []eval.Result, verbose bool) int {
@@ -146,6 +162,11 @@ func writeTable(w io.Writer, results []eval.Result, verbose bool) int {
 	for _, r := range results {
 		if !r.Build {
 			fmt.Fprintf(tw, "%s\tno\t-\n", r.Target)
+			continue
+		}
+		if len(r.Files) == 0 {
+			// Defensive: Build is true but no files recorded.
+			fmt.Fprintf(tw, "%s\tyes\t-\n", r.Target)
 			continue
 		}
 		if verbose {

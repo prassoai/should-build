@@ -18,12 +18,15 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Build
+        run: go build ./...
+
       - name: Vet
         run: go vet ./...
 
       - name: Staticcheck
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
           staticcheck ./...
 
       - name: Test (race)

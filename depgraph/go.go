@@ -31,7 +31,10 @@ func (Go) Deps(repoRoot, importPath string) ([]string, error) {
 	cmd.Dir = absRoot
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("go list %s: %w", importPath, exitError(err))
+		if ee, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("go list %s: %s", importPath, strings.TrimSpace(string(ee.Stderr)))
+		}
+		return nil, fmt.Errorf("go list %s: %w", importPath, err)
 	}
 
 	var files []string
@@ -64,9 +67,3 @@ func outsideRoot(rel string) bool {
 	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-func exitError(err error) error {
-	if ee, ok := err.(*exec.ExitError); ok {
-		return fmt.Errorf("%s", strings.TrimSpace(string(ee.Stderr)))
-	}
-	return err
-}

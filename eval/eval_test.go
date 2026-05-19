@@ -6,31 +6,24 @@ import (
 	"github.com/prassoai/should-build/config"
 )
 
-// helper builds a Config with defaults applied so tests don't need boilerplate.
-func cfg(g config.Global, unknownFile string, targets map[string]config.Target) *config.Config {
-	if unknownFile == "" {
-		unknownFile = "trigger_all"
-	}
-	for name, t := range targets {
-		if t.Lang == "" {
-			if t.Path != "" {
-				t.Lang = "go"
-			} else {
-				t.Lang = "none"
-			}
-		}
-		targets[name] = t
-	}
-	return &config.Config{
+// mustCfg builds a Config through config.Canonicalize so defaults (lang,
+// unknown_file) match production exactly. Fails the test on invalid config.
+func mustCfg(t *testing.T, g config.Global, unknownFile string, targets map[string]config.Target) *config.Config {
+	t.Helper()
+	cfg, err := config.Canonicalize(config.Config{
 		Global:      g,
 		UnknownFile: unknownFile,
 		Targets:     targets,
+	})
+	if err != nil {
+		t.Fatalf("invalid test config: %v", err)
 	}
+	return cfg
 }
 
 // TestGlobalIgnore verifies that globally ignored files never trigger any target.
 func TestGlobalIgnore(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{Ignore: []string{"docs/**", "**/*.md"}},
 		"trigger_all",
 		map[string]config.Target{
@@ -46,7 +39,7 @@ func TestGlobalIgnore(t *testing.T) {
 // TestTargetExclude verifies that a target's exclude patterns prevent triggering,
 // even for files that match global.trigger_all.
 func TestTargetExclude(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{TriggerAll: []string{"go.mod", "go.sum"}},
 		"trigger_all",
 		map[string]config.Target{
@@ -71,7 +64,7 @@ func TestTargetExclude(t *testing.T) {
 
 // TestTargetInclude verifies that include patterns trigger the target.
 func TestTargetInclude(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{},
 		"ignore",
 		map[string]config.Target{
@@ -92,7 +85,7 @@ func TestTargetInclude(t *testing.T) {
 
 // TestDepGraph verifies that files in the dependency graph trigger the target.
 func TestDepGraph(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{},
 		"ignore",
 		map[string]config.Target{
@@ -114,7 +107,7 @@ func TestDepGraph(t *testing.T) {
 // TestDepGraphNoMatch verifies that files outside the dep graph don't trigger
 // via the dep graph path (they may still trigger via other rules).
 func TestDepGraphNoMatch(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{},
 		"ignore",
 		map[string]config.Target{
@@ -132,12 +125,12 @@ func TestDepGraphNoMatch(t *testing.T) {
 
 // TestGlobalTriggerAll verifies that trigger_all patterns fire for non-excluded targets.
 func TestGlobalTriggerAll(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{TriggerAll: []string{"go.mod", "Makefile"}},
 		"ignore",
 		map[string]config.Target{
 			"api": {Path: "./cmd/api"},
-			"web": {},
+			"web": {Include: []string{"web/**"}},
 		},
 	)
 	results := Evaluate(c, []string{"Makefile"}, nil)
@@ -154,12 +147,12 @@ func TestGlobalTriggerAll(t *testing.T) {
 // TestUnknownFileTriggerAll verifies that unmatched files rebuild everything
 // when unknown_file is "trigger_all".
 func TestUnknownFileTriggerAll(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{},
 		"trigger_all",
 		map[string]config.Target{
 			"api": {Path: "./cmd/api"},
-			"web": {},
+			"web": {Include: []string{"web/**"}},
 		},
 	)
 	results := Evaluate(c, []string{"random/new_file.xyz"}, nil)
@@ -176,7 +169,7 @@ func TestUnknownFileTriggerAll(t *testing.T) {
 // TestUnknownFileIgnore verifies that unmatched files are silently skipped
 // when unknown_file is "ignore".
 func TestUnknownFileIgnore(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{},
 		"ignore",
 		map[string]config.Target{
@@ -193,7 +186,7 @@ func TestUnknownFileIgnore(t *testing.T) {
 // in the precedence chain. A file matching both exclude and include does
 // not trigger the target.
 func TestExcludeBeatsInclude(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{},
 		"ignore",
 		map[string]config.Target{
@@ -212,7 +205,7 @@ func TestExcludeBeatsInclude(t *testing.T) {
 // TestExcludeBeatsTriggerAll verifies that a target can exclude itself from
 // global trigger_all files.
 func TestExcludeBeatsTriggerAll(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{TriggerAll: []string{"go.mod"}},
 		"ignore",
 		map[string]config.Target{
@@ -227,7 +220,7 @@ func TestExcludeBeatsTriggerAll(t *testing.T) {
 
 // TestTargetTemplateExpansion verifies that {target} is expanded in include patterns.
 func TestTargetTemplateExpansion(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{},
 		"ignore",
 		map[string]config.Target{
@@ -242,7 +235,7 @@ func TestTargetTemplateExpansion(t *testing.T) {
 
 // TestTargetTemplateInExclude verifies {target} expansion works in exclude patterns.
 func TestTargetTemplateInExclude(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{TriggerAll: []string{"targets/**"}},
 		"ignore",
 		map[string]config.Target{
@@ -257,7 +250,7 @@ func TestTargetTemplateInExclude(t *testing.T) {
 
 // TestNoChangedFiles verifies that no changes means no rebuilds.
 func TestNoChangedFiles(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{},
 		"trigger_all",
 		map[string]config.Target{
@@ -273,7 +266,7 @@ func TestNoChangedFiles(t *testing.T) {
 // TestMultipleFilesTriggerSameTarget verifies that multiple files can all
 // contribute to triggering a single target.
 func TestMultipleFilesTriggerSameTarget(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{},
 		"ignore",
 		map[string]config.Target{
@@ -292,7 +285,7 @@ func TestMultipleFilesTriggerSameTarget(t *testing.T) {
 // TestSameFileTriggersDifferentTargets verifies that one file can trigger
 // multiple targets through different rules.
 func TestSameFileTriggersDifferentTargets(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{},
 		"ignore",
 		map[string]config.Target{
@@ -311,7 +304,7 @@ func TestSameFileTriggersDifferentTargets(t *testing.T) {
 // TestSQLOnlyTriggersSQLTarget verifies that extension-scoped patterns
 // trigger only the intended target, not others.
 func TestSQLOnlyTriggersSQLTarget(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{},
 		"ignore",
 		map[string]config.Target{
@@ -339,13 +332,13 @@ func TestSQLOnlyTriggersSQLTarget(t *testing.T) {
 
 // TestDeterministicOrder verifies that results are sorted by target name.
 func TestDeterministicOrder(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{},
 		"ignore",
 		map[string]config.Target{
-			"zebra":    {},
-			"alpha":    {},
-			"middle":   {},
+			"zebra":  {Include: []string{"z/**"}},
+			"alpha":  {Include: []string{"a/**"}},
+			"middle": {Include: []string{"m/**"}},
 		},
 	)
 	results := Evaluate(c, nil, nil)
@@ -357,11 +350,11 @@ func TestDeterministicOrder(t *testing.T) {
 // TestEmptyFilesSlice verifies that non-triggered targets have an empty
 // (not nil) Files slice, so JSON encodes as [] not null.
 func TestEmptyFilesSlice(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{},
 		"ignore",
 		map[string]config.Target{
-			"api": {},
+			"api": {Include: []string{"api/**"}},
 		},
 	)
 	results := Evaluate(c, []string{"unrelated.txt"}, nil)
@@ -373,7 +366,7 @@ func TestEmptyFilesSlice(t *testing.T) {
 // TestIncludeBeatsDepGraph verifies the precedence: include is checked
 // before the dep graph, so the reason is "include" not "go-dep" when both match.
 func TestIncludeBeatsDepGraph(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{},
 		"ignore",
 		map[string]config.Target{
@@ -395,7 +388,7 @@ func TestIncludeBeatsDepGraph(t *testing.T) {
 // TestGlobalIgnoreBeatsEverything verifies that a globally ignored file
 // doesn't trigger any target, even if it matches include or trigger_all.
 func TestGlobalIgnoreBeatsEverything(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{
 			Ignore:     []string{"**/*.md"},
 			TriggerAll: []string{"**/*.md"}, // contradicts ignore; ignore wins
@@ -413,7 +406,7 @@ func TestGlobalIgnoreBeatsEverything(t *testing.T) {
 
 // TestRuleFieldPopulated verifies that the Rule field captures the matching pattern.
 func TestRuleFieldPopulated(t *testing.T) {
-	c := cfg(
+	c := mustCfg(t,
 		config.Global{TriggerAll: []string{"go.mod"}},
 		"ignore",
 		map[string]config.Target{
