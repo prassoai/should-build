@@ -48,6 +48,8 @@ func setupTestRepo(t *testing.T) (string, string, string) {
 	gitRun(t, dir, "init")
 	gitRun(t, dir, "config", "user.email", "test@test.com")
 	gitRun(t, dir, "config", "user.name", "Test")
+	gitRun(t, dir, "config", "commit.gpgsign", "false")
+	gitRun(t, dir, "config", "tag.gpgsign", "false")
 
 	writeFile(t, filepath.Join(dir, "should-build.yaml"), `
 global:
@@ -136,7 +138,9 @@ func TestRunJSONVerbose(t *testing.T) {
 	}
 }
 
-// TestRunTableVerbose verifies that --verbose shows per-file rows with rules.
+// TestRunTableVerbose verifies that --verbose in table mode emits one row
+// per (target, file) with the matching rule. This is the same behavior as
+// --json --verbose but in human-readable form.
 func TestRunTableVerbose(t *testing.T) {
 	dir, base, head := setupTestRepo(t)
 
@@ -146,12 +150,16 @@ func TestRunTableVerbose(t *testing.T) {
 		t.Fatalf("exit code %d, stderr: %s", code, stderr.String())
 	}
 	out := stdout.String()
-	// Verbose table should include the rule pattern.
+	// Verbose table must include the glob rule pattern.
 	if !strings.Contains(out, "cmd/api/**") {
 		t.Errorf("verbose table should show glob rule:\n%s", out)
 	}
-	if !strings.Contains(out, "include") {
-		t.Errorf("verbose table should show reason:\n%s", out)
+	if !strings.Contains(out, "include:") {
+		t.Errorf("verbose table should show reason with colon:\n%s", out)
+	}
+	// handler.go triggers api via the include pattern — verify the file appears.
+	if !strings.Contains(out, "handler.go") {
+		t.Errorf("verbose table should list triggering file:\n%s", out)
 	}
 }
 
@@ -235,6 +243,8 @@ func TestRunTargetTemplate(t *testing.T) {
 	gitRun(t, dir, "init")
 	gitRun(t, dir, "config", "user.email", "test@test.com")
 	gitRun(t, dir, "config", "user.name", "Test")
+	gitRun(t, dir, "config", "commit.gpgsign", "false")
+	gitRun(t, dir, "config", "tag.gpgsign", "false")
 
 	writeFile(t, filepath.Join(dir, "should-build.yaml"), `
 targets:

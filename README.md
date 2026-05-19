@@ -86,6 +86,11 @@ targets:
 5. `global.trigger_all` — triggers all non-excluded targets
 6. `unknown_file` — fallback policy
 
+**Glob syntax.** Patterns use [doublestar](https://github.com/bmatcuk/doublestar)
+globs, not gitignore semantics. `*` matches within a single path segment;
+use `**` to cross directory boundaries. `*.md` matches `README.md` but NOT
+`docs/README.md` — write `**/*.md` for that.
+
 The `{target}` template variable in `include`/`exclude` patterns expands to
 the target's key name: `targets/{target}/conf/*.yaml` becomes
 `targets/api/conf/*.yaml` for the `api` target.

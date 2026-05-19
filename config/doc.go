@@ -5,7 +5,7 @@
 //
 // The schema has three layers:
 //   - Global rules (ignore, trigger_all) that apply across all targets.
-//   - Per-target rules (include, exclude) with {target} template expansion.
+//   - Per-target rules (include, exclude) with doublestar globs and {target} expansion.
 //   - An unknown_file fallback policy for files matching no rule.
 //
 // # Defaults applied by Canonicalize

@@ -18,24 +18,33 @@ func TestMatchAnyGlobs(t *testing.T) {
 		{name: "star in dir", pattern: "cmd/*", path: "cmd/foo", want: true},
 		{name: "star no deep", pattern: "cmd/*", path: "cmd/foo/bar", want: false},
 
+		// CRITICAL: * does NOT cross / boundaries. This is the key difference
+		// from gitignore semantics, where bare "*.md" matches at any depth.
+		// Users must write "**/*.md" for depth-crossing matches.
+		{name: "star does not cross slash", pattern: "*.md", path: "docs/README.md", want: false},
+		{name: "star does not cross nested", pattern: "*.go", path: "cmd/app/main.go", want: false},
+
 		// Double-star matches across segments.
 		{name: "doublestar ext", pattern: "**/*.go", path: "a/b/c.go", want: true},
 		{name: "doublestar root", pattern: "**/*.go", path: "main.go", want: true},
 		{name: "doublestar prefix", pattern: "docs/**", path: "docs/api/v1.md", want: true},
 		{name: "doublestar no match", pattern: "docs/**", path: "src/main.go", want: false},
+		{name: "doublestar md", pattern: "**/*.md", path: "docs/README.md", want: true},
 
 		// Alternation with braces.
 		{name: "alternation match first", pattern: "*.{go,proto}", path: "foo.go", want: true},
 		{name: "alternation match second", pattern: "*.{go,proto}", path: "foo.proto", want: true},
 		{name: "alternation no match", pattern: "*.{go,proto}", path: "foo.rs", want: false},
 
-		// Question mark matches single character.
+		// Question mark matches single non-/ character.
 		{name: "question mark", pattern: "?.go", path: "a.go", want: true},
 		{name: "question mark no match", pattern: "?.go", path: "ab.go", want: false},
+		{name: "question mark no slash", pattern: "?/a.go", path: "x/a.go", want: true},
 
 		// Exact path match.
 		{name: "exact", pattern: "go.mod", path: "go.mod", want: true},
 		{name: "exact no match", pattern: "go.mod", path: "go.sum", want: false},
+		{name: "exact with dir", pattern: "cmd/api/main.go", path: "cmd/api/main.go", want: true},
 
 		// Nested doublestar.
 		{name: "nested doublestar", pattern: "**/testdata/**", path: "pkg/foo/testdata/x.json", want: true},

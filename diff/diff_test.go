@@ -28,6 +28,8 @@ func initRepo(t *testing.T) string {
 	run(t, dir, "git", "init")
 	run(t, dir, "git", "config", "user.email", "test@test.com")
 	run(t, dir, "git", "config", "user.name", "Test")
+	run(t, dir, "git", "config", "commit.gpgsign", "false")
+	run(t, dir, "git", "config", "tag.gpgsign", "false")
 	writeFile(t, filepath.Join(dir, ".gitkeep"), "")
 	run(t, dir, "git", "add", ".")
 	run(t, dir, "git", "commit", "-m", "initial")
