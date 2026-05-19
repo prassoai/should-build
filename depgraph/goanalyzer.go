@@ -8,6 +8,9 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
+// Compile-time assertion that Go implements Analyzer.
+var _ Analyzer = Go{}
+
 // Go implements [Analyzer] for Go modules using go/packages.
 type Go struct{}
 
@@ -29,6 +32,9 @@ func (Go) Deps(repoRoot, importPath string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading packages: %w", err)
 	}
+	if len(pkgs) == 0 {
+		return nil, fmt.Errorf("no packages found for %s", importPath)
+	}
 	for _, pkg := range pkgs {
 		if len(pkg.Errors) > 0 {
 			return nil, fmt.Errorf("package %s: %s", pkg.PkgPath, pkg.Errors[0])
@@ -36,13 +42,20 @@ func (Go) Deps(repoRoot, importPath string) ([]string, error) {
 	}
 
 	var files []string
+	var walkErr error
 	visited := make(map[string]bool)
 	var walk func(*packages.Package)
 	walk = func(pkg *packages.Package) {
-		if visited[pkg.ID] {
+		if visited[pkg.ID] || walkErr != nil {
 			return
 		}
 		visited[pkg.ID] = true
+
+		// Propagate errors from transitive dependencies.
+		if len(pkg.Errors) > 0 {
+			walkErr = fmt.Errorf("package %s: %s", pkg.PkgPath, pkg.Errors[0])
+			return
+		}
 
 		for _, f := range pkg.GoFiles {
 			rel, err := filepath.Rel(absRoot, f)
@@ -57,6 +70,9 @@ func (Go) Deps(repoRoot, importPath string) ([]string, error) {
 	}
 	for _, pkg := range pkgs {
 		walk(pkg)
+	}
+	if walkErr != nil {
+		return nil, walkErr
 	}
 	return files, nil
 }

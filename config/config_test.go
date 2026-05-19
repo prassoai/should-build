@@ -70,6 +70,22 @@ targets:
 	}
 }
 
+// TestParseExplicitEmptyUnknownFile rejects an explicitly empty unknown_file.
+// This catches the "empty-string-means-default" anti-pattern: if someone
+// writes unknown_file: "", they get an error instead of a silent default.
+func TestParseExplicitEmptyUnknownFile(t *testing.T) {
+	yaml := `
+unknown_file: ""
+targets:
+  api:
+    path: ./cmd/api
+`
+	_, err := Parse([]byte(yaml))
+	if err == nil || !strings.Contains(err.Error(), "invalid value") {
+		t.Fatalf("Parse err = %v, want invalid value error for explicit empty string", err)
+	}
+}
+
 // TestParseNoTargets rejects a config with zero targets.
 func TestParseNoTargets(t *testing.T) {
 	yaml := `
@@ -106,6 +122,67 @@ targets:
 	_, err := Parse([]byte(yaml))
 	if err == nil || !strings.Contains(err.Error(), "requires path") {
 		t.Fatalf("Parse err = %v, want 'requires path' error", err)
+	}
+}
+
+// TestParseNoneWithPathRejected verifies that lang: none with a path is
+// rejected. The path would be silently ignored, which is a config error.
+func TestParseNoneWithPathRejected(t *testing.T) {
+	yaml := `
+targets:
+  web:
+    lang: none
+    path: ./cmd/web
+    include: ["web/**"]
+`
+	_, err := Parse([]byte(yaml))
+	if err == nil || !strings.Contains(err.Error(), "incompatible") {
+		t.Fatalf("Parse err = %v, want incompatible error", err)
+	}
+}
+
+// TestParseNoneNoRulesRejected verifies that a target with lang: none and
+// no include/exclude patterns is rejected. Such a target has no rules and
+// can only fire via global rules, which is almost certainly a config error.
+func TestParseNoneNoRulesRejected(t *testing.T) {
+	yaml := `
+targets:
+  empty:
+    lang: none
+`
+	_, err := Parse([]byte(yaml))
+	if err == nil || !strings.Contains(err.Error(), "no rules") {
+		t.Fatalf("Parse err = %v, want 'no rules' error", err)
+	}
+}
+
+// TestParseBadPattern verifies that syntactically invalid glob patterns
+// are rejected at parse time (fail-fast on misconfiguration).
+func TestParseBadPattern(t *testing.T) {
+	yaml := `
+targets:
+  api:
+    path: ./cmd/api
+    include: ["[unclosed"]
+`
+	_, err := Parse([]byte(yaml))
+	if err == nil || !strings.Contains(err.Error(), "invalid pattern") {
+		t.Fatalf("Parse err = %v, want 'invalid pattern' error", err)
+	}
+}
+
+// TestParseBadGlobalPattern verifies bad patterns in global.ignore are caught.
+func TestParseBadGlobalPattern(t *testing.T) {
+	yaml := `
+global:
+  ignore: ["[bad"]
+targets:
+  api:
+    path: ./cmd/api
+`
+	_, err := Parse([]byte(yaml))
+	if err == nil || !strings.Contains(err.Error(), "invalid pattern") {
+		t.Fatalf("Parse err = %v, want 'invalid pattern' error", err)
 	}
 }
 

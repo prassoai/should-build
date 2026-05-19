@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
@@ -45,17 +46,26 @@ func mainExitCode() int {
 		verbose  bool
 		repoPath string
 	)
-	flag.StringVar(&cfgPath, "config", "should-build.yaml", "path to config file")
+	flag.StringVar(&cfgPath, "config", "", "path to config file (default: <repo>/should-build.yaml)")
 	flag.Var(&targets, "target", "evaluate only this target (repeatable)")
 	flag.BoolVar(&useJSON, "json", false, "output JSON")
 	flag.BoolVar(&quiet, "quiet", false, "exit-code only: 0=skip, 1=rebuild")
-	flag.BoolVar(&verbose, "verbose", false, "show per-file match details")
+	flag.BoolVar(&verbose, "verbose", false, "show per-file match details (requires --json)")
 	flag.StringVar(&repoPath, "repo", ".", "repository root")
 	flag.Parse()
 
 	if flag.NArg() != 2 {
 		fmt.Fprintf(os.Stderr, "usage: should-build [flags] <base-ref> <head-ref>\n")
 		return 2
+	}
+	if verbose && !useJSON {
+		fmt.Fprintf(os.Stderr, "should-build: --verbose requires --json\n")
+		return 2
+	}
+
+	// Default config path to <repo>/should-build.yaml when not explicitly set.
+	if cfgPath == "" {
+		cfgPath = filepath.Join(repoPath, "should-build.yaml")
 	}
 
 	results, err := evaluate(cfgPath, repoPath, flag.Arg(0), flag.Arg(1), targets)
@@ -94,12 +104,17 @@ func evaluate(cfgPath, repoPath, base, head string, filterTargets []string) ([]e
 
 	if len(filterTargets) > 0 {
 		filtered := make(map[string]config.Target, len(filterTargets))
+		var unknown []string
 		for _, name := range filterTargets {
 			t, ok := cfg.Targets[name]
 			if !ok {
-				return nil, fmt.Errorf("unknown target %q", name)
+				unknown = append(unknown, name)
+				continue
 			}
 			filtered[name] = t
+		}
+		if len(unknown) > 0 {
+			return nil, fmt.Errorf("unknown targets: %s", strings.Join(unknown, ", "))
 		}
 		cfg.Targets = filtered
 	}
@@ -125,33 +140,19 @@ func evaluate(cfgPath, repoPath, base, head string, filterTargets []string) ([]e
 	return eval.Evaluate(cfg, changedFiles, deps), nil
 }
 
+// printJSON marshals results as JSON. In non-verbose mode, the Rule field
+// is zeroed so omitempty drops it.
 func printJSON(w io.Writer, results []eval.Result, verbose bool) error {
-	type jsonFile struct {
-		Path   string `json:"path"`
-		Reason string `json:"reason"`
-		Rule   string `json:"rule,omitempty"`
-	}
-	type jsonResult struct {
-		Target string     `json:"target"`
-		Build  bool       `json:"build"`
-		Files  []jsonFile `json:"files"`
-	}
-
-	out := make([]jsonResult, len(results))
-	for i, r := range results {
-		files := make([]jsonFile, len(r.Files))
-		for j, f := range r.Files {
-			files[j] = jsonFile{Path: f.Path, Reason: f.Reason}
-			if verbose {
-				files[j].Rule = f.Rule
+	if !verbose {
+		for i := range results {
+			for j := range results[i].Files {
+				results[i].Files[j].Rule = ""
 			}
 		}
-		out[i] = jsonResult{Target: r.Target, Build: r.Build, Files: files}
 	}
-
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(out)
+	return enc.Encode(results)
 }
 
 func printTable(w io.Writer, results []eval.Result) error {
@@ -160,7 +161,7 @@ func printTable(w io.Writer, results []eval.Result) error {
 	for _, r := range results {
 		build := "no"
 		reason := "-"
-		if r.Build && len(r.Files) > 0 {
+		if r.Build {
 			build = "yes"
 			reason = r.Files[0].Path + " (" + r.Files[0].Reason + ")"
 		}

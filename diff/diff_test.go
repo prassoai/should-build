@@ -140,3 +140,29 @@ func TestChangedInvalidRef(t *testing.T) {
 		t.Error("Changed with invalid ref should fail")
 	}
 }
+
+// TestChangedRename verifies that renamed files appear in the diff output.
+// Git may report renames differently depending on version and config, but
+// at minimum the new name must appear.
+func TestChangedRename(t *testing.T) {
+	dir, base := initRepo(t)
+
+	os.Rename(filepath.Join(dir, "a.go"), filepath.Join(dir, "renamed.go"))
+	git(t, dir, "add", ".")
+	git(t, dir, "commit", "-m", "rename a.go -> renamed.go")
+	head := sha(t, dir)
+
+	got, err := Changed(dir, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasRenamed := false
+	for _, f := range got {
+		if f == "renamed.go" {
+			hasRenamed = true
+		}
+	}
+	if !hasRenamed {
+		t.Errorf("Changed = %v, want renamed.go in list", got)
+	}
+}

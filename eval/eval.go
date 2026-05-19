@@ -87,7 +87,7 @@ func classifyFile(
 	}
 	// Precedence 6: unknown_file policy
 	if cfg.UnknownFile == "trigger_all" {
-		return FileMatch{Path: file, Reason: "unknown-file"}
+		return FileMatch{Path: file, Reason: "unknown-file", Rule: "unknown-file-policy"}
 	}
 	return FileMatch{}
 }

@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -14,7 +15,8 @@ func Changed(repoRoot, base, head string) ([]string, error) {
 	cmd.Dir = repoRoot
 	out, err := cmd.Output()
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
 			return nil, fmt.Errorf("git diff: %s", strings.TrimSpace(string(ee.Stderr)))
 		}
 		return nil, fmt.Errorf("git diff: %w", err)

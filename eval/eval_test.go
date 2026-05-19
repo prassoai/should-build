@@ -283,3 +283,42 @@ func TestFilesNonNilInJSON(t *testing.T) {
 		t.Error("Files should be non-nil empty slice, got nil")
 	}
 }
+
+// TestGlobalTriggerAllIgnoresTemplate confirms that {target} in
+// global.trigger_all patterns is NOT expanded per-target. Global patterns
+// have no target context and must be matched literally.
+func TestGlobalTriggerAllIgnoresTemplate(t *testing.T) {
+	cfg := &config.Config{
+		Global:      config.Global{TriggerAll: []string{"{target}/go.mod"}},
+		UnknownFile: "ignore",
+		Targets: map[string]config.Target{
+			"api": {Path: "./cmd/api"},
+		},
+	}
+	// The literal pattern "{target}/go.mod" should NOT match "api/go.mod"
+	// because global patterns are not expanded per-target.
+	results := Evaluate(cfg, []string{"api/go.mod"}, nil)
+	r := findResult(results, "api")
+	if r.Build {
+		t.Error("api should not build: global.trigger_all must not expand {target}")
+	}
+}
+
+// TestUnknownFileRulePopulated verifies that the Rule field is populated
+// for unknown-file matches, for shape consistency in --verbose output.
+func TestUnknownFileRulePopulated(t *testing.T) {
+	cfg := &config.Config{
+		UnknownFile: "trigger_all",
+		Targets: map[string]config.Target{
+			"api": {Path: "./cmd/api"},
+		},
+	}
+	results := Evaluate(cfg, []string{"mystery.xyz"}, nil)
+	r := findResult(results, "api")
+	if !r.Build {
+		t.Fatal("api should build via unknown-file")
+	}
+	if r.Files[0].Rule == "" {
+		t.Error("unknown-file match should have non-empty Rule for verbose output")
+	}
+}
