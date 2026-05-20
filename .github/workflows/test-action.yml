@@ -1,0 +1,134 @@
+name: Test Action
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-action:
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.should-build.outputs.targets }}
+      any: ${{ steps.should-build.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create deterministic fixture
+        id: fixture
+        run: |
+          # Record base before creating the test commit.
+          echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+          # Create a change that triggers alpha but not beta.
+          git config user.email "test@test.com"
+          git config user.name "Test"
+          mkdir -p testdata/alpha
+          echo "sentinel" > testdata/alpha/trigger.txt
+          git add testdata/alpha/trigger.txt
+          git commit -m "test: trigger alpha"
+
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Run should-build
+        id: should-build
+        uses: ./
+        with:
+          base: ${{ steps.fixture.outputs.base }}
+          head: ${{ steps.fixture.outputs.head }}
+          config: .github/test-fixtures/should-build.yml
+
+      - name: Verify outputs
+        env:
+          TARGETS: ${{ steps.should-build.outputs.targets }}
+          ANY: ${{ steps.should-build.outputs.any }}
+          JSON: ${{ steps.should-build.outputs.json }}
+        run: |
+          set -euo pipefail
+          echo "targets=$TARGETS"
+          echo "any=$ANY"
+
+          # alpha was touched — it must appear in targets.
+          echo "$TARGETS" | jq -e 'index("alpha") != null'
+
+          # beta was NOT touched — it must not appear.
+          echo "$TARGETS" | jq -e 'index("beta") == null'
+
+          # any must be true (alpha needs rebuilding).
+          [[ "$ANY" == "true" ]]
+
+          # Full JSON: alpha.build == true, beta.build == false.
+          echo "$JSON" | jq -e '.[] | select(.target == "alpha") | .build == true'
+          echo "$JSON" | jq -e '.[] | select(.target == "beta") | .build == false'
+
+  # Verify the only (filter) input restricts evaluation to named targets.
+  test-action-filtered:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create deterministic fixture
+        id: fixture
+        run: |
+          echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+          git config user.email "test@test.com"
+          git config user.name "Test"
+          mkdir -p testdata/alpha
+          echo "sentinel" > testdata/alpha/trigger.txt
+          git add testdata/alpha/trigger.txt
+          git commit -m "test: trigger alpha"
+
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Run should-build (filtered to beta)
+        id: should-build
+        uses: ./
+        with:
+          base: ${{ steps.fixture.outputs.base }}
+          head: ${{ steps.fixture.outputs.head }}
+          config: .github/test-fixtures/should-build.yml
+          only: beta
+
+      - name: Verify filtered output
+        env:
+          TARGETS: ${{ steps.should-build.outputs.targets }}
+          ANY: ${{ steps.should-build.outputs.any }}
+          JSON: ${{ steps.should-build.outputs.json }}
+        run: |
+          set -euo pipefail
+
+          # Only beta was evaluated; testdata/beta/** was not touched.
+          echo "$JSON" | jq -e 'length == 1'
+          echo "$JSON" | jq -e '.[0].target == "beta"'
+          echo "$JSON" | jq -e '.[0].build == false'
+
+          # targets array must be empty (nothing needs building).
+          echo "$TARGETS" | jq -e 'length == 0'
+
+          # any must be false.
+          [[ "$ANY" == "false" ]]
+
+  # Verify the fromJSON(targets) matrix pattern works end-to-end.
+  # test-action triggers alpha only, so the matrix has exactly one entry.
+  test-matrix-consumer:
+    needs: test-action
+    if: needs.test-action.outputs.any == 'true'
+    strategy:
+      matrix:
+        target: ${{ fromJSON(needs.test-action.outputs.targets) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify matrix entry
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          [[ "$TARGET" == "alpha" ]]

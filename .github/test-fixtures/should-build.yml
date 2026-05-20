@@ -1,0 +1,15 @@
+# Test fixture for the test-action workflow.
+#
+# Targets match sentinel files created by workflow steps, not real source
+# code.  The workflow writes testdata/alpha/trigger.txt and asserts that
+# alpha builds while beta does not.
+targets:
+  alpha:
+    lang: none
+    include:
+      - "testdata/alpha/**"
+  beta:
+    lang: none
+    include:
+      - "testdata/beta/**"
+unknown_file: ignore

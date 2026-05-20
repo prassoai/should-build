@@ -1,0 +1,107 @@
+name: should-build
+description: |
+  Determine which build targets need rebuilding after a code change.
+  Runs on Linux and macOS. Windows is not supported.
+author: Prasso AI
+
+branding:
+  icon: filter
+  color: blue
+
+inputs:
+  base:
+    description: Base commit SHA (e.g. from nrwl/nx-set-shas).
+    required: true
+  head:
+    description: Head commit SHA.
+    required: true
+  config:
+    description: Path to config file, relative to repo root.
+    required: false
+    default: should-build.yaml
+  only:
+    description: Comma-separated target names to evaluate (no whitespace). Empty evaluates all.
+    required: false
+    default: ""
+  repo:
+    description: Repository root path.
+    required: false
+    default: "."
+  verbose:
+    description: Include per-file match rules in JSON output.
+    required: false
+    default: "false"
+
+outputs:
+  targets:
+    description: JSON array of target names that need rebuilding, e.g. '["api","web"]'.
+    value: ${{ steps.eval.outputs.targets }}
+  any:
+    description: '"true" if any target needs rebuilding, "false" otherwise.'
+    value: ${{ steps.eval.outputs.any }}
+  json:
+    description: Full JSON output from should-build.
+    value: ${{ steps.eval.outputs.json }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: ${{ github.action_path }}/go.mod
+
+    # TODO: download pre-built release binary instead of building from source.
+    - name: Build should-build
+      shell: bash
+      run: |
+        set -euo pipefail
+        go build -o "$RUNNER_TEMP/should-build" "${{ github.action_path }}/cmd/should-build"
+
+    - name: Evaluate targets
+      id: eval
+      shell: bash
+      env:
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_VERBOSE: ${{ inputs.verbose }}
+        INPUT_ONLY: ${{ inputs.only }}
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_HEAD: ${{ inputs.head }}
+      run: |
+        set -euo pipefail
+
+        args=(--json)
+        args+=(--config "$INPUT_CONFIG")
+        args+=(--repo "$INPUT_REPO")
+
+        if [[ "$INPUT_VERBOSE" == "true" ]]; then
+          args+=(--verbose)
+        fi
+
+        if [[ -n "$INPUT_ONLY" ]]; then
+          IFS=',' read -ra FILTER <<< "$INPUT_ONLY"
+          for t in "${FILTER[@]}"; do
+            args+=(--target "$t")
+          done
+        fi
+
+        args+=("$INPUT_BASE" "$INPUT_HEAD")
+
+        json=$("$RUNNER_TEMP/should-build" "${args[@]}")
+
+        # Validate the CLI produced a JSON array.
+        if ! echo "$json" | jq -e 'type == "array"' > /dev/null 2>&1; then
+          echo "::error::should-build did not produce a JSON array"
+          exit 1
+        fi
+
+        targets=$(echo "$json" | jq -c '[.[] | select(.build == true) | .target]')
+        any=$(echo "$json" | jq -r 'any(.[]; .build == true)')
+
+        {
+          echo "json<<SHOULD_BUILD_EOF"
+          echo "$json"
+          echo "SHOULD_BUILD_EOF"
+          echo "targets=$targets"
+          echo "any=$any"
+        } >> "$GITHUB_OUTPUT"
