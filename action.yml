@@ -46,12 +46,103 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-go@v5
+    - name: Download prebuilt binary
+      id: download
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        arch="$(uname -m)"
+        case "$arch" in
+          x86_64)        arch=amd64 ;;
+          aarch64|arm64) arch=arm64 ;;
+        esac
+
+        binary="should-build-${os}-${arch}"
+        tag="${{ github.action_ref }}"
+        repo="${{ github.action_repository }}"
+
+        # Empty ref (local action via uses: ./) — no release to download.
+        # Non-version ref (branch name, SHA) — build from source.
+        # SHA-pinned consumers must never silently receive a different release's binary.
+        if [[ -z "$tag" ]] || [[ ! "$tag" =~ ^v[0-9] ]] || [[ "$tag" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "source=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        base_url="https://github.com/${repo}/releases"
+
+        download_and_verify() {
+          local bin_url="$1" checksum_url="$2"
+          local staging="$RUNNER_TEMP/should-build.staging"
+
+          curl -fsSL --retry 2 -o "$staging" "$bin_url" || return 1
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/checksums.txt" "$checksum_url" || return 1
+
+          # Extract the expected hash with exact field match (second field == binary name).
+          # Exits non-zero if the binary isn't in the checksums file.
+          local expected actual
+          expected="$(awk -v b="${binary}" '$2 == b {print $1; found=1} END{if(!found) exit 1}' \
+            "$RUNNER_TEMP/checksums.txt")" || { rm -f "$staging"; return 1; }
+          if command -v sha256sum &>/dev/null; then
+            actual="$(sha256sum "$staging" | awk '{print $1}')"
+          else
+            actual="$(shasum -a 256 "$staging" | awk '{print $1}')"
+          fi
+
+          if [[ -n "$expected" && "$expected" == "$actual" ]]; then
+            mv "$staging" "$RUNNER_TEMP/should-build"
+            chmod +x "$RUNNER_TEMP/should-build"
+            return 0
+          fi
+          rm -f "$staging"
+          return 1
+        }
+
+        # Resolve the release tag to download.
+        # Exact semver (v1.2.3) downloads directly. Major-version alias (v1)
+        # resolves to the newest stable v1.* release via the GitHub API so that
+        # @v1 consumers never silently jump to v2 when a new major ships.
+        release_tag=""
+        if [[ "$tag" =~ ^v[0-9]+$ ]]; then
+          # Find the highest semver vN.* release. Uses sort -V (version sort)
+          # so that a backport like v1.0.1 published after v1.2.0 doesn't
+          # regress consumers — highest version wins, not newest-by-date.
+          release_tag="$(curl -fsSL \
+            "https://api.github.com/repos/${repo}/releases?per_page=100" \
+            | jq -r --arg pfx "${tag}." \
+              '.[] | select(.prerelease == false) | select(.tag_name | startswith($pfx)) | .tag_name' \
+            | sort -V | tail -1)" || true
+          if [[ -z "$release_tag" ]]; then
+            echo "::notice::No ${tag}.* release found; building from source."
+            echo "source=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+        else
+          release_tag="$tag"
+        fi
+
+        bin_url="${base_url}/download/${release_tag}/${binary}"
+        cs_url="${base_url}/download/${release_tag}/checksums.txt"
+
+        if download_and_verify "$bin_url" "$cs_url"; then
+          echo "Downloaded prebuilt ${binary} (${release_tag})"
+          echo "source=false" >> "$GITHUB_OUTPUT"
+        else
+          rm -f "$RUNNER_TEMP/should-build.staging"
+          echo "::notice::Prebuilt binary not available for ${os}/${arch}; building from source."
+          echo "source=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Setup Go (fallback)
+      if: steps.download.outputs.source == 'true'
+      uses: actions/setup-go@v5
       with:
         go-version-file: ${{ github.action_path }}/go.mod
 
-    # TODO: download pre-built release binary instead of building from source.
-    - name: Build should-build
+    - name: Build from source (fallback)
+      if: steps.download.outputs.source == 'true'
       shell: bash
       run: |
         set -euo pipefail
