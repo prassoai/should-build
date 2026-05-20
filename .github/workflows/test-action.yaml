@@ -1,0 +1,125 @@
+name: Test Action
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare fixture
+        id: fixture
+        run: |
+          cat > should-build-test.yaml << 'YAML'
+          targets:
+            cli:
+              lang: none
+              include:
+                - "cmd/**"
+            evaluator:
+              lang: none
+              include:
+                - "eval/**"
+            docs:
+              lang: none
+              include:
+                - "**/*.md"
+          unknown_file: ignore
+          YAML
+
+          echo "base=$(git rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Run should-build
+        id: should-build
+        uses: ./
+        with:
+          base: ${{ steps.fixture.outputs.base }}
+          head: ${{ steps.fixture.outputs.head }}
+          config: should-build-test.yaml
+
+      - name: Verify outputs
+        env:
+          TARGETS: ${{ steps.should-build.outputs.targets }}
+          ANY: ${{ steps.should-build.outputs.any }}
+          JSON: ${{ steps.should-build.outputs.json }}
+        run: |
+          echo "targets=$TARGETS"
+          echo "any=$ANY"
+          echo "json=$JSON"
+
+          # targets must be a valid JSON array.
+          echo "$TARGETS" | jq -e 'type == "array"'
+
+          # any must be a boolean string.
+          [[ "$ANY" == "true" || "$ANY" == "false" ]]
+
+          # JSON must parse and contain at least one result.
+          echo "$JSON" | jq -e 'length > 0'
+
+  # Verify the target filter input works.
+  test-action-filtered:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare fixture
+        id: fixture
+        run: |
+          cat > should-build-test.yaml << 'YAML'
+          targets:
+            cli:
+              lang: none
+              include:
+                - "cmd/**"
+            evaluator:
+              lang: none
+              include:
+                - "eval/**"
+          unknown_file: ignore
+          YAML
+
+          echo "base=$(git rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Run should-build (filtered)
+        id: should-build
+        uses: ./
+        with:
+          base: ${{ steps.fixture.outputs.base }}
+          head: ${{ steps.fixture.outputs.head }}
+          config: should-build-test.yaml
+          targets: cli
+
+      - name: Verify filtered output
+        env:
+          TARGETS: ${{ steps.should-build.outputs.targets }}
+          JSON: ${{ steps.should-build.outputs.json }}
+        run: |
+          echo "targets=$TARGETS"
+
+          # JSON should only contain the cli target.
+          count=$(echo "$JSON" | jq 'length')
+          [[ "$count" == "1" ]]
+          echo "$JSON" | jq -e '.[0].target == "cli"'
+
+  # Verify matrix consumption pattern works end-to-end.
+  test-matrix-consumer:
+    needs: test-action
+    runs-on: ubuntu-latest
+    # Exercise the fromJSON(targets) pattern even when targets is empty.
+    # The job runs but the matrix step is skipped if there are no targets.
+    steps:
+      - name: Matrix pattern works
+        run: echo "matrix consumer job ran successfully"

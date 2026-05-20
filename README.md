@@ -7,6 +7,64 @@ projects them through a declarative config (`should-build.yaml`) and a
 language-specific dependency-graph analyzer, and answers a single question per
 target: rebuild, or skip.
 
+## GitHub Action
+
+The easiest way to use `should-build` in CI is the composite action hosted in
+this repo. It builds the CLI from source, evaluates your config, and exposes
+matrix-friendly outputs.
+
+```yaml
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.sb.outputs.targets }}
+      any: ${{ steps.sb.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: nrwl/nx-set-shas@v4
+        id: shas
+
+      - uses: prassoai/should-build@v1
+        id: sb
+        with:
+          base: ${{ steps.shas.outputs.base }}
+          head: ${{ steps.shas.outputs.head }}
+          # config: should-build.yaml  (default)
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
+    strategy:
+      matrix:
+        target: ${{ fromJSON(needs.changes.outputs.targets) }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Building ${{ matrix.target }}"
+```
+
+### Inputs
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `base` | yes | | Base commit SHA |
+| `head` | yes | | Head commit SHA |
+| `config` | no | `should-build.yaml` | Path to config file, relative to repo root |
+| `targets` | no | | Comma-separated list of targets to evaluate (empty = all) |
+| `repo` | no | `.` | Repository root path |
+| `verbose` | no | `false` | Include per-file match rules in JSON output |
+
+### Outputs
+
+| Output | Description |
+|--------|-------------|
+| `targets` | JSON array of target names that need rebuilding, e.g. `["api","web"]` |
+| `any` | `"true"` if any target needs rebuilding, `"false"` otherwise |
+| `json` | Full JSON output from `should-build` |
+
 ## Install
 
 ```
