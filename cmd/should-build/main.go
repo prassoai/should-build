@@ -13,7 +13,8 @@
 //	--target <name>    Evaluate only this target (repeatable)
 //	--json             Output JSON
 //	--quiet            Exit 0 if nothing to rebuild, 1 if any target needs rebuilding
-//	--verbose          Show per-file match rules (with --json, also writes explanation to stderr)
+//	--verbose          Show per-file match rules in output
+//	--explain          Write human-readable explanation to stderr
 //	--repo <path>      Repository root (default: current directory)
 package main
 
@@ -24,6 +25,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/prassoai/should-build/config"
@@ -44,7 +46,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		configPath = fs.String("config", "should-build.yaml", "path to config file")
 		jsonOut    = fs.Bool("json", false, "output JSON")
 		quiet      = fs.Bool("quiet", false, "exit-code only: 0 = no rebuild, 1 = rebuild needed")
-		verbose    = fs.Bool("verbose", false, "show per-file match rules")
+		verbose    = fs.Bool("verbose", false, "show per-file match rules in output")
+		explain    = fs.Bool("explain", false, "write human-readable explanation to stderr")
 		repoPath   = fs.String("repo", ".", "repository root")
 		targets    stringSlice
 	)
@@ -118,6 +121,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	results := eval.Evaluate(cfg, changed, deps)
 
+	// --explain is orthogonal to the output mode: it always writes to stderr.
+	if *explain {
+		writeExplain(stderr, results)
+	}
+
 	if *quiet {
 		for _, r := range results {
 			if r.Build {
@@ -134,9 +142,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func writeJSON(stdout, stderr io.Writer, results []eval.Result, verbose bool) int {
-	if verbose {
-		writeExplain(stderr, results)
-	}
 	out := results
 	if !verbose {
 		out = stripRules(results)
@@ -164,31 +169,41 @@ func stripRules(results []eval.Result) []eval.Result {
 }
 
 // writeExplain writes a human-readable explanation of the evaluation to w.
-// Called when --json --verbose is used so CI logs show why each target was
-// or wasn't rebuilt without requiring humans to parse JSON.
+// Called when --explain is set so CI logs show why each target was or wasn't
+// rebuilt without requiring humans to parse JSON.
 func writeExplain(w io.Writer, results []eval.Result) {
+	var body strings.Builder
 	rebuilds := 0
 	for _, r := range results {
 		if r.Build {
 			rebuilds++
 		}
+		body.WriteString(formatExplainResult(r))
+		body.WriteByte('\n')
 	}
-	fmt.Fprintf(w, "should-build: %d targets evaluated, %d rebuilding\n\n", len(results), rebuilds)
-	for _, r := range results {
-		if !r.Build {
-			fmt.Fprintf(w, "  %s: skip\n", r.Target)
-			continue
-		}
-		fmt.Fprintf(w, "  %s: rebuild (%d files)\n", r.Target, len(r.Files))
-		for _, fm := range r.Files {
-			if fm.Rule != "" {
-				fmt.Fprintf(w, "    %s  (%s: %s)\n", fm.Path, fm.Reason, fm.Rule)
-			} else {
-				fmt.Fprintf(w, "    %s  (%s)\n", fm.Path, fm.Reason)
-			}
-		}
+	fmt.Fprintf(w, "should-build: %d targets evaluated, %d rebuilding\n\n%s\n", len(results), rebuilds, body.String())
+}
+
+// formatExplainResult formats a single evaluation result as a human-readable
+// block. Pure function — no I/O, easy to unit-test.
+func formatExplainResult(r eval.Result) string {
+	if !r.Build {
+		return "  " + r.Target + ": skip"
 	}
-	fmt.Fprintln(w)
+	var b strings.Builder
+	fmt.Fprintf(&b, "  %s: rebuild (%d files)", r.Target, len(r.Files))
+	for _, fm := range r.Files {
+		b.WriteString("\n    ")
+		b.WriteString(fm.Path)
+		b.WriteString("  (")
+		b.WriteString(fm.Reason)
+		if fm.Rule != "" {
+			b.WriteString(": ")
+			b.WriteString(fm.Rule)
+		}
+		b.WriteByte(')')
+	}
+	return b.String()
 }
 
 func writeTable(w io.Writer, results []eval.Result, verbose bool) int {

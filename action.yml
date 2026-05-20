@@ -28,7 +28,7 @@ inputs:
     required: false
     default: "."
   verbose:
-    description: Include per-file match rules in the JSON output. The workflow log always shows a human-readable explanation regardless of this setting.
+    description: Include per-file match rules in JSON output.
     required: false
     default: "false"
 
@@ -70,11 +70,15 @@ runs:
       run: |
         set -euo pipefail
 
-        # Always pass --verbose so the CLI writes a human-readable
-        # explanation to stderr, visible in the Actions log.
-        args=(--json --verbose)
+        # --explain: always emit human-readable explanation to stderr (visible in the Actions log).
+        # --verbose: controlled by the caller's verbose input (includes Rule fields in JSON).
+        args=(--json --explain)
         args+=(--config "$INPUT_CONFIG")
         args+=(--repo "$INPUT_REPO")
+
+        if [[ "$INPUT_VERBOSE" == "true" ]]; then
+          args+=(--verbose)
+        fi
 
         if [[ -n "$INPUT_ONLY" ]]; then
           IFS=',' read -ra FILTER <<< "$INPUT_ONLY"
@@ -85,39 +89,34 @@ runs:
 
         args+=("$INPUT_BASE" "$INPUT_HEAD")
 
-        verbose_json=$("$RUNNER_TEMP/should-build" "${args[@]}")
+        raw_json=$("$RUNNER_TEMP/should-build" "${args[@]}")
 
         # Validate the CLI produced a JSON array.
-        if ! echo "$verbose_json" | jq -e 'type == "array"' > /dev/null 2>&1; then
+        if ! echo "$raw_json" | jq -e 'type == "array"' > /dev/null 2>&1; then
           echo "::error::should-build did not produce a JSON array"
           exit 1
         fi
 
-        # Strip rule fields from the output JSON unless the caller requested verbose.
-        if [[ "$INPUT_VERBOSE" == "true" ]]; then
-          json="$verbose_json"
-        else
-          json=$(echo "$verbose_json" | jq '[.[] | .files = [.files[] | del(.rule)]]')
-        fi
-
-        targets=$(echo "$json" | jq -c '[.[] | select(.build == true) | .target]')
-        any=$(echo "$json" | jq -r 'any(.[]; .build == true)')
+        targets=$(echo "$raw_json" | jq -c '[.[] | select(.build == true) | .target]')
+        any=$(echo "$raw_json" | jq -r 'any(.[]; .build == true)')
 
         {
           echo "json<<SHOULD_BUILD_EOF"
-          echo "$json"
+          echo "$raw_json"
           echo "SHOULD_BUILD_EOF"
           echo "targets=$targets"
           echo "any=$any"
         } >> "$GITHUB_OUTPUT"
 
         # Step summary: markdown table on the workflow run page.
+        # Shows first triggering file + count of remaining files for compactness;
+        # the full per-file detail is in the log via --explain.
         {
           echo "### should-build"
           echo ""
           echo "| Target | Build | Trigger |"
           echo "|--------|-------|---------|"
-          echo "$verbose_json" | jq -r '.[] |
+          echo "$raw_json" | jq -r '.[] |
             if .build then
               "| `" + .target + "` | ✅ yes | `" +
               (.files[0].path) + "` (" + .files[0].reason +
