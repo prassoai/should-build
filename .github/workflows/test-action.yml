@@ -66,6 +66,24 @@ jobs:
           echo "$JSON" | jq -e '.[] | select(.target == "alpha") | .build == true'
           echo "$JSON" | jq -e '.[] | select(.target == "beta") | .build == false'
 
+      # Verify the step summary was written by the action.
+      # $GITHUB_STEP_SUMMARY is per-step and not readable across steps,
+      # so the action also writes to $RUNNER_TEMP/should-build-summary.md.
+      - name: Verify step summary
+        run: |
+          set -euo pipefail
+          summary=$(cat "$RUNNER_TEMP/should-build-summary.md")
+          echo "$summary"
+
+          # The summary must contain the markdown table header.
+          echo "$summary" | grep -q "| Target | Build | Trigger |"
+
+          # alpha rebuilt — verify it shows the rebuild icon.
+          echo "$summary" | grep -qE 'alpha.*✅'
+
+          # beta skipped — verify it shows the skip icon.
+          echo "$summary" | grep -qE 'beta.*⬜'
+
   # Verify the only (filter) input restricts evaluation to named targets.
   test-action-filtered:
     runs-on: ubuntu-latest

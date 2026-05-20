@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/prassoai/should-build/eval"
 )
 
 // gitEnv returns env vars that isolate git from the host's global config.
@@ -133,6 +135,7 @@ func TestRunTable(t *testing.T) {
 }
 
 // TestRunJSON tests JSON output format.
+// Without --explain, no explanation is written to stderr.
 func TestRunJSON(t *testing.T) {
 	dir, base, head := setupTestRepo(t)
 
@@ -149,9 +152,14 @@ func TestRunJSON(t *testing.T) {
 	if strings.Contains(out, `"rule"`) {
 		t.Errorf("non-verbose JSON should omit rule field:\n%s", out)
 	}
+	// Without --explain, no explanation should appear on stderr.
+	if strings.Contains(stderr.String(), "should-build:") {
+		t.Errorf("--json without --explain should not write explanation to stderr, got:\n%s", stderr.String())
+	}
 }
 
 // TestRunJSONVerbose verifies that --json --verbose preserves the Rule field.
+// --verbose controls JSON shape only; --explain is a separate flag.
 func TestRunJSONVerbose(t *testing.T) {
 	dir, base, head := setupTestRepo(t)
 
@@ -166,6 +174,64 @@ func TestRunJSONVerbose(t *testing.T) {
 	}
 	if !strings.Contains(out, `cmd/api/**`) {
 		t.Errorf("verbose JSON should show the matching glob pattern:\n%s", out)
+	}
+	// --verbose alone does not write explanation to stderr.
+	if strings.Contains(stderr.String(), "should-build:") {
+		t.Errorf("--verbose without --explain should not write explanation to stderr, got:\n%s", stderr.String())
+	}
+}
+
+// TestRunExplain verifies that --explain writes a human-readable explanation
+// to stderr, independent of --verbose. This is what the GitHub Action uses
+// to make CI logs diagnosable at a glance.
+func TestRunExplain(t *testing.T) {
+	dir, base, head := setupTestRepo(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--repo", dir, "--json", "--explain", base, head}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr.String())
+	}
+
+	// JSON on stdout should still omit rules (--verbose not passed).
+	if strings.Contains(stdout.String(), `"rule"`) {
+		t.Errorf("--explain without --verbose should omit rule field in JSON:\n%s", stdout.String())
+	}
+
+	// Explanation on stderr.
+	explain := stderr.String()
+	if !strings.Contains(explain, "should-build: 2 targets evaluated, 1 rebuilding") {
+		t.Errorf("explanation should show summary header, got:\n%s", explain)
+	}
+	if !strings.Contains(explain, "api: rebuild") {
+		t.Errorf("explanation should show api rebuilding, got:\n%s", explain)
+	}
+	if !strings.Contains(explain, "web: skip") {
+		t.Errorf("explanation should show web skipping, got:\n%s", explain)
+	}
+	if !strings.Contains(explain, "handler.go") {
+		t.Errorf("explanation should list triggering files, got:\n%s", explain)
+	}
+	if !strings.Contains(explain, "cmd/api/**") {
+		t.Errorf("explanation should show matching rule, got:\n%s", explain)
+	}
+}
+
+// TestRunExplainVerbose verifies that --explain and --verbose compose:
+// explanation on stderr, rules in JSON on stdout.
+func TestRunExplainVerbose(t *testing.T) {
+	dir, base, head := setupTestRepo(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--repo", dir, "--json", "--verbose", "--explain", base, head}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"rule"`) {
+		t.Errorf("--verbose should include rule field in JSON:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "api: rebuild") {
+		t.Errorf("--explain should write explanation to stderr:\n%s", stderr.String())
 	}
 }
 
@@ -278,6 +344,51 @@ func TestRunMissingConfig(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "reading config") {
 		t.Errorf("expected config error, got: %s", stderr.String())
+	}
+}
+
+// TestFormatExplainResult directly tests the pure formatting helper.
+func TestFormatExplainResult(t *testing.T) {
+	tests := []struct {
+		name   string
+		result eval.Result
+		want   string
+	}{
+		{
+			name:   "skip",
+			result: eval.Result{Target: "web", Files: []eval.FileMatch{}},
+			want:   "  web: skip",
+		},
+		{
+			name: "rebuild with rule",
+			result: eval.Result{Target: "api", Build: true, Files: []eval.FileMatch{
+				{Path: "cmd/api/handler.go", Reason: "include", Rule: "cmd/api/**"},
+			}},
+			want: "  api: rebuild (1 file)\n    cmd/api/handler.go  (include: cmd/api/**)",
+		},
+		{
+			name: "rebuild without rule",
+			result: eval.Result{Target: "api", Build: true, Files: []eval.FileMatch{
+				{Path: "pkg/auth/token.go", Reason: "go-dep"},
+			}},
+			want: "  api: rebuild (1 file)\n    pkg/auth/token.go  (go-dep)",
+		},
+		{
+			name: "rebuild multiple files",
+			result: eval.Result{Target: "api", Build: true, Files: []eval.FileMatch{
+				{Path: "cmd/api/handler.go", Reason: "include", Rule: "cmd/api/**"},
+				{Path: "go.mod", Reason: "trigger-all", Rule: "go.mod"},
+			}},
+			want: "  api: rebuild (2 files)\n    cmd/api/handler.go  (include: cmd/api/**)\n    go.mod  (trigger-all: go.mod)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatExplainResult(tt.result)
+			if got != tt.want {
+				t.Errorf("formatExplainResult() =\n%q\nwant:\n%q", got, tt.want)
+			}
+		})
 	}
 }
 

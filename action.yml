@@ -28,7 +28,7 @@ inputs:
     required: false
     default: "."
   verbose:
-    description: Include per-file match rules in JSON output.
+    description: Include per-file match rules in JSON and table output.
     required: false
     default: "false"
 
@@ -161,7 +161,9 @@ runs:
       run: |
         set -euo pipefail
 
-        args=(--json)
+        # --explain: always emit human-readable explanation to stderr (visible in the Actions log).
+        # --verbose: controlled by the caller's verbose input (includes Rule fields in JSON).
+        args=(--json --explain)
         args+=(--config "$INPUT_CONFIG")
         args+=(--repo "$INPUT_REPO")
 
@@ -178,21 +180,46 @@ runs:
 
         args+=("$INPUT_BASE" "$INPUT_HEAD")
 
-        json=$("$RUNNER_TEMP/should-build" "${args[@]}")
+        raw_json=$("$RUNNER_TEMP/should-build" "${args[@]}")
 
         # Validate the CLI produced a JSON array.
-        if ! echo "$json" | jq -e 'type == "array"' > /dev/null 2>&1; then
+        if ! echo "$raw_json" | jq -e 'type == "array"' > /dev/null 2>&1; then
           echo "::error::should-build did not produce a JSON array"
           exit 1
         fi
 
-        targets=$(echo "$json" | jq -c '[.[] | select(.build == true) | .target]')
-        any=$(echo "$json" | jq -r 'any(.[]; .build == true)')
+        targets=$(echo "$raw_json" | jq -c '[.[] | select(.build == true) | .target]')
+        any=$(echo "$raw_json" | jq -r 'any(.[]; .build == true)')
 
         {
           echo "json<<SHOULD_BUILD_EOF"
-          echo "$json"
+          echo "$raw_json"
           echo "SHOULD_BUILD_EOF"
           echo "targets=$targets"
           echo "any=$any"
         } >> "$GITHUB_OUTPUT"
+
+        # Step summary: markdown table on the workflow run page.
+        # Shows first triggering file + count of remaining files for compactness;
+        # the full per-file detail is in the log via --explain.
+        summary=$(
+          echo "### should-build"
+          echo ""
+          echo "| Target | Build | Trigger |"
+          echo "|--------|-------|---------|"
+          echo "$raw_json" | jq -r '.[] |
+            if .build then
+              "| `" + .target + "` | ✅ yes | `" +
+              (.files[0].path) + "` (" + .files[0].reason +
+              (if .files[0].rule then ": `" + .files[0].rule + "`" else "" end) +
+              ")" +
+              (if (.files | length) > 1 then " + " + ((.files | length) - 1 | tostring) + " more" else "" end) +
+              " |"
+            else
+              "| `" + .target + "` | ⬜ no | — |"
+            end'
+        )
+        echo "$summary" >> "$GITHUB_STEP_SUMMARY"
+        # Also write to a fixed path so later steps can verify the content.
+        # $GITHUB_STEP_SUMMARY is per-step and not readable across steps.
+        echo "$summary" > "$RUNNER_TEMP/should-build-summary.md"
