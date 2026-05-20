@@ -111,7 +111,7 @@ runs:
         # Step summary: markdown table on the workflow run page.
         # Shows first triggering file + count of remaining files for compactness;
         # the full per-file detail is in the log via --explain.
-        {
+        summary=$(
           echo "### should-build"
           echo ""
           echo "| Target | Build | Trigger |"
@@ -127,4 +127,8 @@ runs:
             else
               "| `" + .target + "` | ⬜ no | — |"
             end'
-        } >> "$GITHUB_STEP_SUMMARY"
+        )
+        echo "$summary" >> "$GITHUB_STEP_SUMMARY"
+        # Also write to a fixed path so later steps can verify the content.
+        # $GITHUB_STEP_SUMMARY is per-step and not readable across steps.
+        echo "$summary" > "$RUNNER_TEMP/should-build-summary.md"
