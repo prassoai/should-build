@@ -80,14 +80,11 @@ runs:
           curl -fsSL --retry 2 -o "$staging" "$bin_url" || return 1
           curl -fsSL --retry 2 -o "$RUNNER_TEMP/checksums.txt" "$checksum_url" || return 1
 
-          # Verify the binary appears in the checksums file (fixed-string match).
-          if ! grep -qF "  ${binary}" "$RUNNER_TEMP/checksums.txt"; then
-            rm -f "$staging"
-            return 1
-          fi
-
+          # Extract the expected hash with exact field match (second field == binary name).
+          # Exits non-zero if the binary isn't in the checksums file.
           local expected actual
-          expected="$(grep -F "  ${binary}" "$RUNNER_TEMP/checksums.txt" | awk '{print $1}')"
+          expected="$(awk -v b="${binary}" '$2 == b {print $1; found=1} END{if(!found) exit 1}' \
+            "$RUNNER_TEMP/checksums.txt")" || { rm -f "$staging"; return 1; }
           if command -v sha256sum &>/dev/null; then
             actual="$(sha256sum "$staging" | awk '{print $1}')"
           else
@@ -109,11 +106,14 @@ runs:
         # @v1 consumers never silently jump to v2 when a new major ships.
         release_tag=""
         if [[ "$tag" =~ ^v[0-9]+$ ]]; then
+          # Find the highest semver vN.* release. Uses sort -V (version sort)
+          # so that a backport like v1.0.1 published after v1.2.0 doesn't
+          # regress consumers — highest version wins, not newest-by-date.
           release_tag="$(curl -fsSL \
-            "https://api.github.com/repos/${repo}/releases" \
+            "https://api.github.com/repos/${repo}/releases?per_page=100" \
             | jq -r --arg pfx "${tag}." \
-              '[.[] | select(.prerelease == false) | select(.tag_name | startswith($pfx))]
-               | sort_by(.created_at) | last | .tag_name // empty')" || true
+              '.[] | select(.prerelease == false) | select(.tag_name | startswith($pfx)) | .tag_name' \
+            | sort -V | tail -1)" || true
           if [[ -z "$release_tag" ]]; then
             echo "::notice::No ${tag}.* release found; building from source."
             echo "source=true" >> "$GITHUB_OUTPUT"

@@ -8,6 +8,11 @@ on:
 permissions:
   contents: write
 
+# Serialize publish jobs so concurrent v1.x releases don't race on the
+# floating major-version tag update (git tag -f + push --force).
+concurrency:
+  group: release-publish
+
 jobs:
   build:
     strategy:
