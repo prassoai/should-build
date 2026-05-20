@@ -15,6 +15,7 @@
 //	--quiet            Exit 0 if nothing to rebuild, 1 if any target needs rebuilding
 //	--verbose          Show per-file match rules
 //	--repo <path>      Repository root (default: current directory)
+//	--version          Print version and exit
 package main
 
 import (

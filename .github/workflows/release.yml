@@ -61,13 +61,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          flags=()
+          if [[ "${{ github.ref_name }}" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
           gh release create "${{ github.ref_name }}" \
             --repo "${{ github.repository }}" \
             --title "${{ github.ref_name }}" \
             --generate-notes \
+            "${flags[@]}" \
             should-build-* checksums.txt
 
+      # Update the floating major-version tag (e.g. v1) so that
+      # @v1 consumers track the latest stable patch. Skipped for
+      # pre-release tags (contain a hyphen, e.g. v1.0.0-rc1) to
+      # avoid exposing unstable builds to @v1 consumers.
       - name: Update major version tag
+        if: ${{ !contains(github.ref_name, '-') }}
         run: |
           major="${{ github.ref_name }}"
           major="${major%%.*}"

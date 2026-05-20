@@ -108,6 +108,9 @@ func TestRunVersion(t *testing.T) {
 	if !strings.Contains(out, "dev") {
 		t.Errorf("expected default version 'dev' in output: %s", out)
 	}
+	if !strings.Contains(out, "unknown") {
+		t.Errorf("expected default commit 'unknown' in output: %s", out)
+	}
 }
 
 // TestRunTable tests the full CLI run function with table output.

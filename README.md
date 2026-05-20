@@ -124,6 +124,7 @@ should-build [flags] <base-ref> <head-ref>
 | `--quiet` | Exit 0 = nothing to rebuild, exit 1 = rebuild needed. No stdout. |
 | `--verbose` | Show per-file match rules |
 | `--repo <path>` | Repository root (default: `.`) |
+| `--version` | Print version and exit |
 
 **Examples:**
 
