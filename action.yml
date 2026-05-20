@@ -46,12 +46,75 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-go@v5
+    - name: Download prebuilt binary
+      id: download
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        arch="$(uname -m)"
+        case "$arch" in
+          x86_64)       arch=amd64 ;;
+          aarch64|arm64) arch=arm64 ;;
+        esac
+
+        binary="should-build-${os}-${arch}"
+        tag="${{ github.action_ref }}"
+
+        # Local action (uses: ./) or empty ref — skip download.
+        if [[ -z "$tag" || "$tag" == *"/"* ]]; then
+          echo "source=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        base_url="https://github.com/${{ github.action_repository }}/releases"
+
+        download_and_verify() {
+          local bin_url="$1" checksum_url="$2"
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/should-build" "$bin_url" || return 1
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/checksums.txt" "$checksum_url" || return 1
+
+          local expected actual
+          expected="$(grep "${binary}" "$RUNNER_TEMP/checksums.txt" | awk '{print $1}')"
+          if command -v sha256sum &>/dev/null; then
+            actual="$(sha256sum "$RUNNER_TEMP/should-build" | awk '{print $1}')"
+          else
+            actual="$(shasum -a 256 "$RUNNER_TEMP/should-build" | awk '{print $1}')"
+          fi
+
+          [[ -n "$expected" && "$expected" == "$actual" ]]
+        }
+
+        # Try exact tag first (works for v1.0.0), then latest release (works for v1 alias).
+        for t in "$tag" "latest"; do
+          if [[ "$t" == "latest" ]]; then
+            bin_url="${base_url}/latest/download/${binary}"
+            cs_url="${base_url}/latest/download/checksums.txt"
+          else
+            bin_url="${base_url}/download/${t}/${binary}"
+            cs_url="${base_url}/download/${t}/checksums.txt"
+          fi
+
+          if download_and_verify "$bin_url" "$cs_url"; then
+            chmod +x "$RUNNER_TEMP/should-build"
+            echo "Downloaded prebuilt ${binary} (${t})"
+            echo "source=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+        done
+
+        echo "::notice::Prebuilt binary not available for ${os}/${arch}; building from source."
+        echo "source=true" >> "$GITHUB_OUTPUT"
+
+    - name: Setup Go (fallback)
+      if: steps.download.outputs.source == 'true'
+      uses: actions/setup-go@v5
       with:
         go-version-file: ${{ github.action_path }}/go.mod
 
-    # TODO: download pre-built release binary instead of building from source.
-    - name: Build should-build
+    - name: Build from source (fallback)
+      if: steps.download.outputs.source == 'true'
       shell: bash
       run: |
         set -euo pipefail

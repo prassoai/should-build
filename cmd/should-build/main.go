@@ -32,6 +32,13 @@ import (
 	"github.com/prassoai/should-build/eval"
 )
 
+// version and commit are set by ldflags at build time.
+// See .github/workflows/release.yml.
+var (
+	version = "dev"
+	commit  = "unknown"
+)
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -41,17 +48,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 
 	var (
-		configPath = fs.String("config", "should-build.yaml", "path to config file")
-		jsonOut    = fs.Bool("json", false, "output JSON")
-		quiet      = fs.Bool("quiet", false, "exit-code only: 0 = no rebuild, 1 = rebuild needed")
-		verbose    = fs.Bool("verbose", false, "show per-file match rules")
-		repoPath   = fs.String("repo", ".", "repository root")
-		targets    stringSlice
+		configPath  = fs.String("config", "should-build.yaml", "path to config file")
+		jsonOut     = fs.Bool("json", false, "output JSON")
+		quiet       = fs.Bool("quiet", false, "exit-code only: 0 = no rebuild, 1 = rebuild needed")
+		verbose     = fs.Bool("verbose", false, "show per-file match rules")
+		repoPath    = fs.String("repo", ".", "repository root")
+		showVersion = fs.Bool("version", false, "print version and exit")
+		targets     stringSlice
 	)
 	fs.Var(&targets, "target", "evaluate only this target (repeatable)")
 
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if *showVersion {
+		fmt.Fprintf(stdout, "should-build %s (%s)\n", version, commit)
+		return 0
 	}
 	if fs.NArg() != 2 {
 		fmt.Fprintf(stderr, "usage: should-build [flags] <base-ref> <head-ref>\n")

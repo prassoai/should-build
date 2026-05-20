@@ -10,8 +10,9 @@ target: rebuild, or skip.
 ## GitHub Action
 
 The easiest way to use `should-build` in CI is the composite action hosted in
-this repo. It builds the CLI from source, evaluates your config, and exposes
-matrix-friendly outputs.
+this repo. It downloads a prebuilt binary from the matching GitHub release (with
+SHA-256 checksum verification), falling back to building from source if the
+binary isn't available for the runner's platform. Outputs are matrix-friendly.
 
 > **Note:** The checkout step must use `fetch-depth: 0` because `should-build`
 > runs `git diff` between the base and head commits — a shallow clone won't
@@ -53,9 +54,6 @@ jobs:
 The `if: ... any == 'true'` guard matters: when no targets need rebuilding,
 `targets` is `[]` and `fromJSON` produces a zero-iteration matrix, which
 GitHub treats as a workflow error unless the job is skipped.
-
-> **Version pin:** Until a `v1` tag is published, pin to a commit SHA or
-> branch name (e.g. `prassoai/should-build@main`).
 
 ### Inputs
 

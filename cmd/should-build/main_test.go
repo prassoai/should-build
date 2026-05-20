@@ -92,6 +92,24 @@ targets:
 	return dir, base, head
 }
 
+// TestRunVersion verifies that --version prints version info and exits 0.
+// The version/commit variables are set by ldflags during release builds;
+// in tests they retain their default values ("dev" / "unknown").
+func TestRunVersion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--version"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "should-build") {
+		t.Errorf("expected program name in version output: %s", out)
+	}
+	if !strings.Contains(out, "dev") {
+		t.Errorf("expected default version 'dev' in output: %s", out)
+	}
+}
+
 // TestRunTable tests the full CLI run function with table output.
 func TestRunTable(t *testing.T) {
 	dir, base, head := setupTestRepo(t)
