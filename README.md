@@ -13,6 +13,10 @@ The easiest way to use `should-build` in CI is the composite action hosted in
 this repo. It builds the CLI from source, evaluates your config, and exposes
 matrix-friendly outputs.
 
+> **Note:** The checkout step must use `fetch-depth: 0` because `should-build`
+> runs `git diff` between the base and head commits — a shallow clone won't
+> have the base commit.
+
 ```yaml
 jobs:
   changes:
@@ -46,6 +50,13 @@ jobs:
       - run: echo "Building ${{ matrix.target }}"
 ```
 
+The `if: ... any == 'true'` guard matters: when no targets need rebuilding,
+`targets` is `[]` and `fromJSON` produces a zero-iteration matrix, which
+GitHub treats as a workflow error unless the job is skipped.
+
+> **Version pin:** Until a `v1` tag is published, pin to a commit SHA or
+> branch name (e.g. `prassoai/should-build@main`).
+
 ### Inputs
 
 | Input | Required | Default | Description |
@@ -53,7 +64,7 @@ jobs:
 | `base` | yes | | Base commit SHA |
 | `head` | yes | | Head commit SHA |
 | `config` | no | `should-build.yaml` | Path to config file, relative to repo root |
-| `targets` | no | | Comma-separated list of targets to evaluate (empty = all) |
+| `only` | no | | Comma-separated target names to evaluate, no whitespace (empty = all) |
 | `repo` | no | `.` | Repository root path |
 | `verbose` | no | `false` | Include per-file match rules in JSON output |
 
@@ -64,6 +75,34 @@ jobs:
 | `targets` | JSON array of target names that need rebuilding, e.g. `["api","web"]` |
 | `any` | `"true"` if any target needs rebuilding, `"false"` otherwise |
 | `json` | Full JSON output from `should-build` |
+
+### Migrating from docker-based usage
+
+If you currently invoke `should-build` via the docker container (as in
+`prassoai/back`), replace the `docker run` step with the composite action:
+
+```yaml
+# Before (docker):
+- name: Determine targets
+  run: |
+    json=$(docker run --rm -v .:/workspace \
+      us-central1-docker.pkg.dev/.../should-build:latest \
+      --base $NX_BASE --head $NX_HEAD --repo /workspace \
+      --target github.com/prassoai/tools/cmd/api \
+      --target github.com/prassoai/tools/cmd/web)
+    echo "matrix=$(echo "$json" | jq -cr '[.[] | split("/")[-1]]')" >> "$GITHUB_OUTPUT"
+
+# After (composite action):
+- uses: prassoai/should-build@v1
+  id: sb
+  with:
+    base: ${{ env.NX_BASE }}
+    head: ${{ env.NX_HEAD }}
+    # only: api,web  (optional — omit to evaluate all targets in config)
+```
+
+The action handles JSON parsing internally — `outputs.targets` is already the
+array of names that need rebuilding.
 
 ## Install
 

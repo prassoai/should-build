@@ -1,6 +1,12 @@
 name: should-build
-description: Determine which build targets need rebuilding after a code change.
+description: |
+  Determine which build targets need rebuilding after a code change.
+  Runs on Linux and macOS. Windows is not supported.
 author: Prasso AI
+
+branding:
+  icon: filter
+  color: blue
 
 inputs:
   base:
@@ -13,8 +19,8 @@ inputs:
     description: Path to config file, relative to repo root.
     required: false
     default: should-build.yaml
-  targets:
-    description: Comma-separated list of targets to evaluate. Empty evaluates all.
+  only:
+    description: Comma-separated target names to evaluate (no whitespace). Empty evaluates all.
     required: false
     default: ""
   repo:
@@ -44,9 +50,12 @@ runs:
       with:
         go-version-file: ${{ github.action_path }}/go.mod
 
+    # TODO: download pre-built release binary instead of building from source.
     - name: Build should-build
       shell: bash
-      run: go build -o "$RUNNER_TEMP/should-build" "${{ github.action_path }}/cmd/should-build"
+      run: |
+        set -euo pipefail
+        go build -o "$RUNNER_TEMP/should-build" "${{ github.action_path }}/cmd/should-build"
 
     - name: Evaluate targets
       id: eval
@@ -55,10 +64,12 @@ runs:
         INPUT_CONFIG: ${{ inputs.config }}
         INPUT_REPO: ${{ inputs.repo }}
         INPUT_VERBOSE: ${{ inputs.verbose }}
-        INPUT_TARGETS: ${{ inputs.targets }}
+        INPUT_ONLY: ${{ inputs.only }}
         INPUT_BASE: ${{ inputs.base }}
         INPUT_HEAD: ${{ inputs.head }}
       run: |
+        set -euo pipefail
+
         args=(--json)
         args+=(--config "$INPUT_CONFIG")
         args+=(--repo "$INPUT_REPO")
@@ -67,10 +78,10 @@ runs:
           args+=(--verbose)
         fi
 
-        if [[ -n "$INPUT_TARGETS" ]]; then
-          IFS=',' read -ra TARGETS <<< "$INPUT_TARGETS"
-          for t in "${TARGETS[@]}"; do
-            args+=(--target "$(echo "$t" | xargs)")
+        if [[ -n "$INPUT_ONLY" ]]; then
+          IFS=',' read -ra FILTER <<< "$INPUT_ONLY"
+          for t in "${FILTER[@]}"; do
+            args+=(--target "$t")
           done
         fi
 
@@ -78,8 +89,14 @@ runs:
 
         json=$("$RUNNER_TEMP/should-build" "${args[@]}")
 
+        # Validate the CLI produced a JSON array.
+        if ! echo "$json" | jq -e 'type == "array"' > /dev/null 2>&1; then
+          echo "::error::should-build did not produce a JSON array"
+          exit 1
+        fi
+
         targets=$(echo "$json" | jq -c '[.[] | select(.build == true) | .target]')
-        any=$(echo "$json" | jq 'any(.[]; .build == true)')
+        any=$(echo "$json" | jq -r 'any(.[]; .build == true)')
 
         {
           echo "json<<SHOULD_BUILD_EOF"
