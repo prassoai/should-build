@@ -13,7 +13,7 @@
 //	--target <name>    Evaluate only this target (repeatable)
 //	--json             Output JSON
 //	--quiet            Exit 0 if nothing to rebuild, 1 if any target needs rebuilding
-//	--verbose          Show per-file match rules
+//	--verbose          Show per-file match rules (with --json, also writes explanation to stderr)
 //	--repo <path>      Repository root (default: current directory)
 package main
 
@@ -134,6 +134,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func writeJSON(stdout, stderr io.Writer, results []eval.Result, verbose bool) int {
+	if verbose {
+		writeExplain(stderr, results)
+	}
 	out := results
 	if !verbose {
 		out = stripRules(results)
@@ -158,6 +161,34 @@ func stripRules(results []eval.Result) []eval.Result {
 		out[i] = eval.Result{Target: r.Target, Build: r.Build, Files: files}
 	}
 	return out
+}
+
+// writeExplain writes a human-readable explanation of the evaluation to w.
+// Called when --json --verbose is used so CI logs show why each target was
+// or wasn't rebuilt without requiring humans to parse JSON.
+func writeExplain(w io.Writer, results []eval.Result) {
+	rebuilds := 0
+	for _, r := range results {
+		if r.Build {
+			rebuilds++
+		}
+	}
+	fmt.Fprintf(w, "should-build: %d targets evaluated, %d rebuilding\n\n", len(results), rebuilds)
+	for _, r := range results {
+		if !r.Build {
+			fmt.Fprintf(w, "  %s: skip\n", r.Target)
+			continue
+		}
+		fmt.Fprintf(w, "  %s: rebuild (%d files)\n", r.Target, len(r.Files))
+		for _, fm := range r.Files {
+			if fm.Rule != "" {
+				fmt.Fprintf(w, "    %s  (%s: %s)\n", fm.Path, fm.Reason, fm.Rule)
+			} else {
+				fmt.Fprintf(w, "    %s  (%s)\n", fm.Path, fm.Reason)
+			}
+		}
+	}
+	fmt.Fprintln(w)
 }
 
 func writeTable(w io.Writer, results []eval.Result, verbose bool) int {

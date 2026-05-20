@@ -28,7 +28,7 @@ inputs:
     required: false
     default: "."
   verbose:
-    description: Include per-file match rules in JSON output.
+    description: Include per-file match rules in the JSON output. The workflow log always shows a human-readable explanation regardless of this setting.
     required: false
     default: "false"
 
@@ -70,13 +70,11 @@ runs:
       run: |
         set -euo pipefail
 
-        args=(--json)
+        # Always pass --verbose so the CLI writes a human-readable
+        # explanation to stderr, visible in the Actions log.
+        args=(--json --verbose)
         args+=(--config "$INPUT_CONFIG")
         args+=(--repo "$INPUT_REPO")
-
-        if [[ "$INPUT_VERBOSE" == "true" ]]; then
-          args+=(--verbose)
-        fi
 
         if [[ -n "$INPUT_ONLY" ]]; then
           IFS=',' read -ra FILTER <<< "$INPUT_ONLY"
@@ -87,12 +85,19 @@ runs:
 
         args+=("$INPUT_BASE" "$INPUT_HEAD")
 
-        json=$("$RUNNER_TEMP/should-build" "${args[@]}")
+        verbose_json=$("$RUNNER_TEMP/should-build" "${args[@]}")
 
         # Validate the CLI produced a JSON array.
-        if ! echo "$json" | jq -e 'type == "array"' > /dev/null 2>&1; then
+        if ! echo "$verbose_json" | jq -e 'type == "array"' > /dev/null 2>&1; then
           echo "::error::should-build did not produce a JSON array"
           exit 1
+        fi
+
+        # Strip rule fields from the output JSON unless the caller requested verbose.
+        if [[ "$INPUT_VERBOSE" == "true" ]]; then
+          json="$verbose_json"
+        else
+          json=$(echo "$verbose_json" | jq '[.[] | .files = [.files[] | del(.rule)]]')
         fi
 
         targets=$(echo "$json" | jq -c '[.[] | select(.build == true) | .target]')
@@ -105,3 +110,22 @@ runs:
           echo "targets=$targets"
           echo "any=$any"
         } >> "$GITHUB_OUTPUT"
+
+        # Step summary: markdown table on the workflow run page.
+        {
+          echo "### should-build"
+          echo ""
+          echo "| Target | Build | Trigger |"
+          echo "|--------|-------|---------|"
+          echo "$verbose_json" | jq -r '.[] |
+            if .build then
+              "| `" + .target + "` | ✅ yes | `" +
+              (.files[0].path) + "` (" + .files[0].reason +
+              (if .files[0].rule then ": `" + .files[0].rule + "`" else "" end) +
+              ")" +
+              (if (.files | length) > 1 then " + " + ((.files | length) - 1 | tostring) + " more" else "" end) +
+              " |"
+            else
+              "| `" + .target + "` | ⬜ no | — |"
+            end'
+        } >> "$GITHUB_STEP_SUMMARY"

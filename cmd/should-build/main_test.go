@@ -112,6 +112,7 @@ func TestRunTable(t *testing.T) {
 }
 
 // TestRunJSON tests JSON output format.
+// Non-verbose JSON omits the Rule field and does not write an explanation to stderr.
 func TestRunJSON(t *testing.T) {
 	dir, base, head := setupTestRepo(t)
 
@@ -128,9 +129,14 @@ func TestRunJSON(t *testing.T) {
 	if strings.Contains(out, `"rule"`) {
 		t.Errorf("non-verbose JSON should omit rule field:\n%s", out)
 	}
+	// Non-verbose mode should not write an explanation to stderr.
+	if stderr.Len() != 0 {
+		t.Errorf("non-verbose --json should not write to stderr, got:\n%s", stderr.String())
+	}
 }
 
-// TestRunJSONVerbose verifies that --json --verbose preserves the Rule field.
+// TestRunJSONVerbose verifies that --json --verbose preserves the Rule field
+// and writes a human-readable explanation to stderr for CI log readability.
 func TestRunJSONVerbose(t *testing.T) {
 	dir, base, head := setupTestRepo(t)
 
@@ -145,6 +151,24 @@ func TestRunJSONVerbose(t *testing.T) {
 	}
 	if !strings.Contains(out, `cmd/api/**`) {
 		t.Errorf("verbose JSON should show the matching glob pattern:\n%s", out)
+	}
+
+	// Verbose mode writes a human-readable explanation to stderr.
+	explain := stderr.String()
+	if !strings.Contains(explain, "should-build:") {
+		t.Errorf("verbose --json should write explanation header to stderr, got:\n%s", explain)
+	}
+	if !strings.Contains(explain, "api: rebuild") {
+		t.Errorf("explanation should show api rebuilding, got:\n%s", explain)
+	}
+	if !strings.Contains(explain, "web: skip") {
+		t.Errorf("explanation should show web skipping, got:\n%s", explain)
+	}
+	if !strings.Contains(explain, "handler.go") {
+		t.Errorf("explanation should list triggering files, got:\n%s", explain)
+	}
+	if !strings.Contains(explain, "cmd/api/**") {
+		t.Errorf("explanation should show matching rule, got:\n%s", explain)
 	}
 }
 
