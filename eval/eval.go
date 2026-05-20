@@ -54,13 +54,12 @@ func Evaluate(cfg *config.Config, changed []string, deps map[string][]string) []
 
 	results := make([]Result, 0, len(names))
 	for _, name := range names {
-		target := cfg.Targets[name]
-		results = append(results, evaluateTarget(cfg, name, &target, filtered, depSets[name]))
+		results = append(results, evaluateTarget(cfg, name, cfg.Targets[name], filtered, depSets[name]))
 	}
 	return results
 }
 
-func evaluateTarget(cfg *config.Config, name string, target *config.Target, files []string, depSet map[string]struct{}) Result {
+func evaluateTarget(cfg *config.Config, name string, target config.Target, files []string, depSet map[string]struct{}) Result {
 	r := Result{
 		Target: name,
 		Files:  []FileMatch{}, // never nil — JSON encodes as []

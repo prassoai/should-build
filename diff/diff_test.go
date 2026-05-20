@@ -9,11 +9,22 @@ import (
 	"testing"
 )
 
+// gitEnv returns env vars that isolate git from the host's global config.
+// This prevents test failures on machines with commit signing, custom
+// hooks, or non-default init templates.
+func gitEnv() []string {
+	return append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+	)
+}
+
 // run executes a command in dir and fails the test on error.
 func run(t *testing.T, dir string, name string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
+	cmd.Env = gitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %v: %v\n%s", name, args, err, out)
@@ -28,8 +39,6 @@ func initRepo(t *testing.T) string {
 	run(t, dir, "git", "init")
 	run(t, dir, "git", "config", "user.email", "test@test.com")
 	run(t, dir, "git", "config", "user.name", "Test")
-	run(t, dir, "git", "config", "commit.gpgsign", "false")
-	run(t, dir, "git", "config", "tag.gpgsign", "false")
 	writeFile(t, filepath.Join(dir, ".gitkeep"), "")
 	run(t, dir, "git", "add", ".")
 	run(t, dir, "git", "commit", "-m", "initial")
@@ -50,6 +59,7 @@ func sha(t *testing.T, dir, ref string) string {
 	t.Helper()
 	cmd := exec.Command("git", "rev-parse", ref)
 	cmd.Dir = dir
+	cmd.Env = gitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatal(err)

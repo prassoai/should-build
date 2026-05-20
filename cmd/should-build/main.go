@@ -59,6 +59,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	baseRef, headRef := fs.Arg(0), fs.Arg(1)
 
+	if *quiet && *jsonOut {
+		fmt.Fprintf(stderr, "error: --quiet and --json are mutually exclusive\n")
+		return 2
+	}
+
 	// Resolve config path relative to repo root.
 	cfgFile := *configPath
 	if !filepath.IsAbs(cfgFile) {
@@ -96,8 +101,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Compute dependency graphs for Go targets.
-	// Failure is a hard error — with the default unknown_file: trigger_all,
-	// silently skipping would hide misconfiguration behind unnecessary rebuilds.
+	// Failure is a hard error — silently skipping hides misconfiguration.
 	var analyzer depgraph.Go
 	deps := make(map[string][]string)
 	for name, t := range cfg.Targets {
@@ -162,11 +166,6 @@ func writeTable(w io.Writer, results []eval.Result, verbose bool) int {
 	for _, r := range results {
 		if !r.Build {
 			fmt.Fprintf(tw, "%s\tno\t-\n", r.Target)
-			continue
-		}
-		if len(r.Files) == 0 {
-			// Defensive: Build is true but no files recorded.
-			fmt.Fprintf(tw, "%s\tyes\t-\n", r.Target)
 			continue
 		}
 		if verbose {

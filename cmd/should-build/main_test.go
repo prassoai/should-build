@@ -9,6 +9,16 @@ import (
 	"testing"
 )
 
+// gitEnv returns env vars that isolate git from the host's global config.
+// This prevents test failures on machines with commit signing, custom
+// hooks, or non-default init templates.
+func gitEnv() []string {
+	return append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+	)
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -23,6 +33,7 @@ func gitRun(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = gitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -33,6 +44,7 @@ func gitSHA(t *testing.T, dir, ref string) string {
 	t.Helper()
 	cmd := exec.Command("git", "rev-parse", ref)
 	cmd.Dir = dir
+	cmd.Env = gitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatal(err)
@@ -48,8 +60,6 @@ func setupTestRepo(t *testing.T) (string, string, string) {
 	gitRun(t, dir, "init")
 	gitRun(t, dir, "config", "user.email", "test@test.com")
 	gitRun(t, dir, "config", "user.name", "Test")
-	gitRun(t, dir, "config", "commit.gpgsign", "false")
-	gitRun(t, dir, "config", "tag.gpgsign", "false")
 
 	writeFile(t, filepath.Join(dir, "should-build.yaml"), `
 global:
@@ -189,6 +199,20 @@ func TestRunQuietNoBuild(t *testing.T) {
 	}
 }
 
+// TestRunQuietJSON verifies that --quiet --json is rejected.
+func TestRunQuietJSON(t *testing.T) {
+	dir, base, head := setupTestRepo(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--repo", dir, "--quiet", "--json", base, head}, &stdout, &stderr)
+	if code != 2 {
+		t.Errorf("expected exit 2 for --quiet --json, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "mutually exclusive") {
+		t.Errorf("expected mutually exclusive error, got: %s", stderr.String())
+	}
+}
+
 // TestRunTargetFilter tests --target flag filters to specific targets.
 func TestRunTargetFilter(t *testing.T) {
 	dir, base, head := setupTestRepo(t)
@@ -243,8 +267,6 @@ func TestRunTargetTemplate(t *testing.T) {
 	gitRun(t, dir, "init")
 	gitRun(t, dir, "config", "user.email", "test@test.com")
 	gitRun(t, dir, "config", "user.name", "Test")
-	gitRun(t, dir, "config", "commit.gpgsign", "false")
-	gitRun(t, dir, "config", "tag.gpgsign", "false")
 
 	writeFile(t, filepath.Join(dir, "should-build.yaml"), `
 targets:
