@@ -78,11 +78,11 @@ jobs:
           # The summary must contain the markdown table header.
           echo "$summary" | grep -q "| Target | Build | Trigger |"
 
-          # alpha rebuilt — it must appear with a ✅.
-          echo "$summary" | grep -q "alpha"
+          # alpha rebuilt — verify it shows the rebuild icon.
+          echo "$summary" | grep -qE 'alpha.*✅'
 
-          # beta skipped — it must appear with ⬜.
-          echo "$summary" | grep -q "beta"
+          # beta skipped — verify it shows the skip icon.
+          echo "$summary" | grep -qE 'beta.*⬜'
 
   # Verify the only (filter) input restricts evaluation to named targets.
   test-action-filtered:

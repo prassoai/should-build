@@ -343,14 +343,14 @@ func TestFormatExplainResult(t *testing.T) {
 			result: eval.Result{Target: "api", Build: true, Files: []eval.FileMatch{
 				{Path: "cmd/api/handler.go", Reason: "include", Rule: "cmd/api/**"},
 			}},
-			want: "  api: rebuild (1 files)\n    cmd/api/handler.go  (include: cmd/api/**)",
+			want: "  api: rebuild (1 file)\n    cmd/api/handler.go  (include: cmd/api/**)",
 		},
 		{
 			name: "rebuild without rule",
 			result: eval.Result{Target: "api", Build: true, Files: []eval.FileMatch{
 				{Path: "pkg/auth/token.go", Reason: "go-dep"},
 			}},
-			want: "  api: rebuild (1 files)\n    pkg/auth/token.go  (go-dep)",
+			want: "  api: rebuild (1 file)\n    pkg/auth/token.go  (go-dep)",
 		},
 		{
 			name: "rebuild multiple files",

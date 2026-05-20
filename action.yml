@@ -28,7 +28,7 @@ inputs:
     required: false
     default: "."
   verbose:
-    description: Include per-file match rules in JSON output.
+    description: Include per-file match rules in JSON and table output.
     required: false
     default: "false"
 

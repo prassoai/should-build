@@ -13,7 +13,7 @@
 //	--target <name>    Evaluate only this target (repeatable)
 //	--json             Output JSON
 //	--quiet            Exit 0 if nothing to rebuild, 1 if any target needs rebuilding
-//	--verbose          Show per-file match rules in output
+//	--verbose          Show per-file match rules in JSON and table output
 //	--explain          Write human-readable explanation to stderr
 //	--repo <path>      Repository root (default: current directory)
 package main
@@ -46,7 +46,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		configPath = fs.String("config", "should-build.yaml", "path to config file")
 		jsonOut    = fs.Bool("json", false, "output JSON")
 		quiet      = fs.Bool("quiet", false, "exit-code only: 0 = no rebuild, 1 = rebuild needed")
-		verbose    = fs.Bool("verbose", false, "show per-file match rules in output")
+		verbose    = fs.Bool("verbose", false, "show per-file match rules in JSON and table output")
 		explain    = fs.Bool("explain", false, "write human-readable explanation to stderr")
 		repoPath   = fs.String("repo", ".", "repository root")
 		targets    stringSlice
@@ -174,14 +174,16 @@ func stripRules(results []eval.Result) []eval.Result {
 func writeExplain(w io.Writer, results []eval.Result) {
 	var body strings.Builder
 	rebuilds := 0
-	for _, r := range results {
+	for i, r := range results {
 		if r.Build {
 			rebuilds++
 		}
+		if i > 0 {
+			body.WriteByte('\n')
+		}
 		body.WriteString(formatExplainResult(r))
-		body.WriteByte('\n')
 	}
-	fmt.Fprintf(w, "should-build: %d targets evaluated, %d rebuilding\n\n%s\n", len(results), rebuilds, body.String())
+	fmt.Fprintf(w, "should-build: %d targets evaluated, %d rebuilding\n\n%s\n\n", len(results), rebuilds, body.String())
 }
 
 // formatExplainResult formats a single evaluation result as a human-readable
@@ -191,7 +193,11 @@ func formatExplainResult(r eval.Result) string {
 		return "  " + r.Target + ": skip"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "  %s: rebuild (%d files)", r.Target, len(r.Files))
+	noun := "files"
+	if len(r.Files) == 1 {
+		noun = "file"
+	}
+	fmt.Fprintf(&b, "  %s: rebuild (%d %s)", r.Target, len(r.Files), noun)
 	for _, fm := range r.Files {
 		b.WriteString("\n    ")
 		b.WriteString(fm.Path)
