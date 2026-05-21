@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -507,4 +508,55 @@ unknown_file: ignore
 	if !strings.Contains(out, "myservice-prod.hjson") {
 		t.Errorf("expected hjson file in output:\n%s", out)
 	}
+}
+
+// TestRunInvalidRef verifies that the CLI exits non-zero when git receives an
+// unresolvable ref. This is the primary exit-code safety test: callers must
+// never see exit 0 when git fails, because exit 0 means "I evaluated
+// successfully and here are the results." An invalid base SHA with exit 0
+// would silently produce no targets, causing deploy-everything to not trigger.
+func TestRunInvalidRef(t *testing.T) {
+	dir, _, head := setupTestRepo(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--repo", dir, "nonexistent-sha", head}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for invalid ref, got 0; stderr: %s", stderr.String())
+	}
+	if code != 2 {
+		t.Errorf("expected exit 2 for git failure, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "git diff") {
+		t.Errorf("stderr should mention git diff, got: %s", stderr.String())
+	}
+}
+
+// errWriter is an io.Writer that always returns an error, used to simulate
+// broken stdout (pipe closed, disk full, etc.).
+type errWriter struct{ err error }
+
+func (w errWriter) Write([]byte) (int, error) { return 0, w.err }
+
+// TestRunWriteError verifies that the CLI exits non-zero when stdout fails.
+// A broken pipe must not be silently swallowed — exit 0 with partial output
+// is worse than exit 2 with an error on stderr.
+func TestRunWriteError(t *testing.T) {
+	dir, base, head := setupTestRepo(t)
+	brokenStdout := errWriter{errors.New("broken pipe")}
+
+	t.Run("table", func(t *testing.T) {
+		var stderr bytes.Buffer
+		code := run([]string{"--repo", dir, base, head}, brokenStdout, &stderr)
+		if code == 0 {
+			t.Fatalf("expected non-zero exit when stdout fails, got 0")
+		}
+	})
+
+	t.Run("json", func(t *testing.T) {
+		var stderr bytes.Buffer
+		code := run([]string{"--repo", dir, "--json", base, head}, brokenStdout, &stderr)
+		if code == 0 {
+			t.Fatalf("expected non-zero exit when stdout fails, got 0")
+		}
+	})
 }

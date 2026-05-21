@@ -143,7 +143,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if *jsonOut {
 		return writeJSON(stdout, stderr, results, *verbose)
 	}
-	return writeTable(stdout, results, *verbose)
+	return writeTable(stdout, stderr, results, *verbose)
 }
 
 func writeJSON(stdout, stderr io.Writer, results []eval.Result, verbose bool) int {
@@ -252,8 +252,8 @@ func formatExplainResult(r eval.Result) string {
 	return b.String()
 }
 
-func writeTable(w io.Writer, results []eval.Result, verbose bool) int {
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+func writeTable(stdout, stderr io.Writer, results []eval.Result, verbose bool) int {
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "TARGET\tBUILD\tREASON\n")
 	for _, r := range results {
 		if !r.Build {
@@ -277,7 +277,10 @@ func writeTable(w io.Writer, results []eval.Result, verbose bool) int {
 			}
 		}
 	}
-	tw.Flush()
+	if err := tw.Flush(); err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 2
+	}
 	return 0
 }
 
