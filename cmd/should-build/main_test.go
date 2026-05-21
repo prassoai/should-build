@@ -381,6 +381,21 @@ func TestFormatExplainResult(t *testing.T) {
 			}},
 			want: "  api: rebuild (2 files)\n    cmd/api/handler.go  (include: cmd/api/**)\n    go.mod  (trigger-all: go.mod)",
 		},
+		{
+			name: "rebuild from trigger",
+			result: eval.Result{Target: "vm", Build: true, Files: []eval.FileMatch{
+				{Reason: "triggered-by", Rule: "control"},
+			}},
+			want: "  vm: rebuild (1 trigger)\n    triggered by control",
+		},
+		{
+			name: "rebuild from files and trigger",
+			result: eval.Result{Target: "vm", Build: true, Files: []eval.FileMatch{
+				{Path: "cmd/vm/main.go", Reason: "include", Rule: "cmd/vm/**"},
+				{Reason: "triggered-by", Rule: "control"},
+			}},
+			want: "  vm: rebuild (1 file, 1 trigger)\n    cmd/vm/main.go  (include: cmd/vm/**)\n    triggered by control",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -389,6 +404,68 @@ func TestFormatExplainResult(t *testing.T) {
 				t.Errorf("formatExplainResult() =\n%q\nwant:\n%q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestRunTargetTriggerExpansion verifies that --target evaluates the named
+// target initially, but trigger propagation pulls in additional targets.
+// "should-build --target control" with control.triggers=[vm] should output
+// both control (build=true from include) and vm (build=true from triggered-by).
+func TestRunTargetTriggerExpansion(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init")
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+	gitRun(t, dir, "config", "user.name", "Test")
+
+	writeFile(t, filepath.Join(dir, "should-build.yaml"), `
+targets:
+  control:
+    lang: none
+    include:
+      - "cmd/control/**"
+    triggers:
+      - vm
+  vm:
+    lang: none
+    include:
+      - "cmd/vm/**"
+  other:
+    lang: none
+    include:
+      - "other/**"
+unknown_file: ignore
+`)
+	writeFile(t, filepath.Join(dir, ".gitkeep"), "")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "initial")
+	base := gitSHA(t, dir, "HEAD")
+
+	writeFile(t, filepath.Join(dir, "cmd", "control", "main.go"), "package main")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "add control code")
+	head := gitSHA(t, dir, "HEAD")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--repo", dir, "--json", "--verbose", "--target", "control", base, head}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code %d, stderr: %s", code, stderr.String())
+	}
+
+	out := stdout.String()
+	// control should build from include match.
+	if !strings.Contains(out, `"target": "control"`) {
+		t.Errorf("output should contain control target:\n%s", out)
+	}
+	// vm should build from trigger expansion (not in --target, but triggered by control).
+	if !strings.Contains(out, `"target": "vm"`) {
+		t.Errorf("output should contain vm target (trigger expansion):\n%s", out)
+	}
+	if !strings.Contains(out, `"triggered-by"`) {
+		t.Errorf("output should contain triggered-by reason:\n%s", out)
+	}
+	// "other" should NOT appear — not in --target and not triggered.
+	if strings.Contains(out, `"other"`) {
+		t.Errorf("output should not contain other target:\n%s", out)
 	}
 }
 

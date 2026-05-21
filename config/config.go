@@ -3,6 +3,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"slices"
+	"sort"
+	"strings"
 
 	"github.com/prassoai/should-build/match"
 	"gopkg.in/yaml.v3"
@@ -23,10 +26,11 @@ type Global struct {
 
 // Target defines a single build target.
 type Target struct {
-	Path    string   `yaml:"path"`
-	Lang    string   `yaml:"lang"`
-	Include []string `yaml:"include"`
-	Exclude []string `yaml:"exclude"`
+	Path     string   `yaml:"path"`
+	Lang     string   `yaml:"lang"`
+	Include  []string `yaml:"include"`
+	Exclude  []string `yaml:"exclude"`
+	Triggers []string `yaml:"triggers"`
 }
 
 // Load reads and validates a config file at path.
@@ -85,6 +89,10 @@ func Canonicalize(cfg Config) (*Config, error) {
 		targets[name] = ct
 	}
 	cfg.Targets = targets
+
+	if err := validateTriggers(cfg.Targets); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
 }
 
@@ -124,6 +132,72 @@ func validatePatterns(patterns []string) error {
 	for _, p := range patterns {
 		if err := match.ValidatePattern(p); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// validateTriggers checks that all trigger references point to existing targets
+// and that the trigger graph is acyclic.
+func validateTriggers(targets map[string]Target) error {
+	for name, t := range targets {
+		for _, ref := range t.Triggers {
+			if _, ok := targets[ref]; !ok {
+				return fmt.Errorf("target %q triggers unknown target %q", name, ref)
+			}
+			if ref == name {
+				return fmt.Errorf("target %q triggers itself", name)
+			}
+		}
+	}
+	return detectCycle(targets)
+}
+
+// detectCycle uses DFS to find cycles in the trigger graph.
+// The outer loop iterates targets in sorted order for deterministic error messages.
+func detectCycle(targets map[string]Target) error {
+	const (
+		white = 0 // unvisited
+		gray  = 1 // in current DFS path
+		black = 2 // fully explored
+	)
+	color := make(map[string]int, len(targets))
+	parent := make(map[string]string, len(targets))
+
+	var visit func(string) error
+	visit = func(name string) error {
+		color[name] = gray
+		for _, ref := range targets[name].Triggers {
+			switch color[ref] {
+			case gray:
+				cycle := []string{ref, name}
+				for cur := name; parent[cur] != "" && cur != ref; cur = parent[cur] {
+					cycle = append(cycle, parent[cur])
+				}
+				slices.Reverse(cycle)
+				return fmt.Errorf("trigger cycle: %s", strings.Join(cycle, " -> "))
+			case white:
+				parent[ref] = name
+				if err := visit(ref); err != nil {
+					return err
+				}
+			}
+		}
+		color[name] = black
+		return nil
+	}
+
+	names := make([]string, 0, len(targets))
+	for name := range targets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		if color[name] == white {
+			if err := visit(name); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

@@ -171,6 +171,43 @@ targets:
       - "web/**"
 ```
 
+### Target triggers
+
+A target can declare `triggers:` — a list of other targets that must also
+build whenever it builds. Use this when deploying target A requires target B
+to exist at the same version (e.g. a control plane and its matching VM image):
+
+```yaml
+targets:
+  murmur-control:
+    path: ./cmd/murmur-control
+    triggers:
+      - murmur-vm
+      - murmur
+  murmur-vm:
+    path: ./cmd/murmur-vm
+  murmur:
+    path: ./cmd/murmur
+```
+
+Triggers propagate transitively: if A triggers B and B triggers C, building A
+also builds B and C. Cycles are a configuration error — `should-build` rejects
+them at parse time. Targets that already build from their own rules are not
+given a redundant `triggered-by` entry.
+
+In the JSON output, triggered targets appear with reason `"triggered-by"` and
+rule set to the source target name:
+
+```json
+{
+  "target": "murmur-vm",
+  "build": true,
+  "files": [{ "reason": "triggered-by", "rule": "murmur-control" }]
+}
+```
+
+### Evaluation precedence
+
 **Evaluation precedence** (per file, per target):
 
 1. `global.ignore` — file invisible to all targets
@@ -179,6 +216,7 @@ targets:
 4. Dependency graph — file is in a package the target imports
 5. `global.trigger_all` — triggers all non-excluded targets
 6. `unknown_file` — fallback policy
+7. `target.triggers` — after per-target evaluation, propagate builds transitively
 
 **Glob syntax.** Patterns use [doublestar](https://github.com/bmatcuk/doublestar)
 globs, not gitignore semantics. `*` matches within a single path segment;
