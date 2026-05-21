@@ -33,7 +33,7 @@ jobs:
       - uses: nrwl/nx-set-shas@v4
         id: shas
 
-      - uses: prassoai/should-build@v1
+      - uses: prassoai/should-build@v0
         id: sb
         with:
           base: ${{ steps.shas.outputs.base }}
@@ -74,24 +74,22 @@ GitHub treats as a workflow error unless the job is skipped.
 | `any` | `"true"` if any target needs rebuilding, `"false"` otherwise |
 | `json` | Full JSON output from `should-build` |
 
-### Migrating from docker-based usage
+### Migrating from a docker-based invocation
 
-If you currently invoke `should-build` via the docker container (as in
-`prassoai/back`), replace the `docker run` step with the composite action:
+If you currently invoke `should-build` via a docker image, replace the
+`docker run` step with the composite action:
 
 ```yaml
 # Before (docker):
 - name: Determine targets
   run: |
     json=$(docker run --rm -v .:/workspace \
-      us-central1-docker.pkg.dev/.../should-build:latest \
-      --base $NX_BASE --head $NX_HEAD --repo /workspace \
-      --target github.com/prassoai/tools/cmd/api \
-      --target github.com/prassoai/tools/cmd/web)
+      ghcr.io/your-org/should-build:latest \
+      --base $NX_BASE --head $NX_HEAD --repo /workspace)
     echo "matrix=$(echo "$json" | jq -cr '[.[] | split("/")[-1]]')" >> "$GITHUB_OUTPUT"
 
 # After (composite action):
-- uses: prassoai/should-build@v1
+- uses: prassoai/should-build@v0
   id: sb
   with:
     base: ${{ env.NX_BASE }}
@@ -190,10 +188,6 @@ use `**` to cross directory boundaries. `*.md` matches `README.md` but NOT
 The `{target}` template variable in `include`/`exclude` patterns expands to
 the target's key name: `targets/{target}/conf/*.yaml` becomes
 `targets/api/conf/*.yaml` for the `api` target.
-
-## Design
-
-[prassoai/murmuration#1812](https://github.com/prassoai/murmuration/pull/1812)
 
 ## License
 
