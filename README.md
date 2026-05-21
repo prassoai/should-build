@@ -202,7 +202,7 @@ rule set to the source target name:
 {
   "target": "murmur-vm",
   "build": true,
-  "files": [{ "path": "murmur-control", "reason": "triggered-by", "rule": "murmur-control" }]
+  "files": [{ "reason": "triggered-by", "rule": "murmur-control" }]
 }
 ```
 

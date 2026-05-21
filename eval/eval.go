@@ -16,9 +16,9 @@ type Result struct {
 
 // FileMatch records why a changed file triggered a target.
 type FileMatch struct {
-	Path   string `json:"path"`
-	Reason string `json:"reason"`           // "go-dep", "include", "trigger-all", "triggered-by", "unknown-file"
-	Rule   string `json:"rule,omitempty"`   // the specific glob, import path, or trigger source target
+	Path   string `json:"path,omitempty"`
+	Reason string `json:"reason"`         // "go-dep", "include", "trigger-all", "triggered-by", "unknown-file"
+	Rule   string `json:"rule,omitempty"` // the specific glob, import path, or trigger source target
 }
 
 // Evaluate determines which targets need rebuilding.
@@ -26,7 +26,12 @@ type FileMatch struct {
 // changed is the list of file paths (relative to repo root) modified between
 // the base and head commits. deps maps target names to the set of file paths
 // each target transitively depends on (from the language-specific analyzer).
-func Evaluate(cfg *config.Config, changed []string, deps map[string][]string) []Result {
+//
+// only restricts which targets are initially evaluated against the diff.
+// When empty, all targets in cfg are evaluated. Trigger propagation may
+// expand the result set beyond the initial set: if a building target triggers
+// another target not in only, that target is evaluated and added to the output.
+func Evaluate(cfg *config.Config, changed []string, deps map[string][]string, only []string) []Result {
 	// Pre-filter globally ignored files.
 	filtered := make([]string, 0, len(changed))
 	for _, f := range changed {
@@ -45,10 +50,16 @@ func Evaluate(cfg *config.Config, changed []string, deps map[string][]string) []
 		depSets[target] = s
 	}
 
-	// Sort target names for deterministic output.
-	names := make([]string, 0, len(cfg.Targets))
-	for name := range cfg.Targets {
-		names = append(names, name)
+	// Determine initial evaluation set.
+	var names []string
+	if len(only) > 0 {
+		names = make([]string, len(only))
+		copy(names, only)
+	} else {
+		names = make([]string, 0, len(cfg.Targets))
+		for name := range cfg.Targets {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
 
@@ -57,8 +68,7 @@ func Evaluate(cfg *config.Config, changed []string, deps map[string][]string) []
 		results = append(results, evaluateTarget(cfg, name, cfg.Targets[name], filtered, depSets[name]))
 	}
 
-	propagateTriggers(cfg, results)
-	return results
+	return propagateTriggers(cfg, filtered, depSets, results)
 }
 
 func evaluateTarget(cfg *config.Config, name string, target config.Target, files []string, depSet map[string]struct{}) Result {
@@ -109,9 +119,17 @@ func evaluateTarget(cfg *config.Config, name string, target config.Target, files
 }
 
 // propagateTriggers applies the trigger graph: if target A builds and
-// triggers B, mark B as building too. Repeats until no new targets are
-// activated (transitive closure). The config layer guarantees no cycles.
-func propagateTriggers(cfg *config.Config, results []Result) {
+// triggers B, B is also marked as building. When B is not yet in the result
+// set (e.g. excluded by --target), it is fully evaluated against the diff
+// and added. All trigger sources are recorded when multiple targets trigger
+// the same dependent. Targets already building from their own rules do not
+// get a redundant triggered-by entry.
+//
+// Returns a new slice sorted by target name. The input slice is not modified.
+func propagateTriggers(cfg *config.Config, files []string, depSets map[string]map[string]struct{}, initial []Result) []Result {
+	results := make([]Result, len(initial))
+	copy(results, initial)
+
 	idx := make(map[string]int, len(results))
 	for i, r := range results {
 		idx[r.Target] = i
@@ -119,28 +137,77 @@ func propagateTriggers(cfg *config.Config, results []Result) {
 
 	for changed := true; changed; {
 		changed = false
-		for _, r := range results {
-			if !r.Build {
+		n := len(results)
+		for i := 0; i < n; i++ {
+			if !results[i].Build {
 				continue
 			}
-			for _, triggered := range cfg.Targets[r.Target].Triggers {
-				j, ok := idx[triggered]
-				if !ok {
-					continue // target filtered out by --target flag
-				}
-				if results[j].Build {
+			for _, triggered := range cfg.Targets[results[i].Target].Triggers {
+				j, inSet := idx[triggered]
+				if !inSet {
+					// Triggered target not yet evaluated — evaluate and add.
+					t := cfg.Targets[triggered]
+					r := evaluateTarget(cfg, triggered, t, files, depSets[triggered])
+					if !hasOwnBuildReason(r) {
+						r.Build = true
+						r.Files = append(r.Files, FileMatch{
+							Reason: "triggered-by",
+							Rule:   results[i].Target,
+						})
+					}
+					idx[triggered] = len(results)
+					results = append(results, r)
+					changed = true
 					continue
 				}
-				results[j].Build = true
-				results[j].Files = append(results[j].Files, FileMatch{
-					Path:   r.Target,
-					Reason: "triggered-by",
-					Rule:   r.Target,
-				})
-				changed = true
+				// Target already in result set.
+				if hasOwnBuildReason(results[j]) {
+					continue // already building from own rules — no triggered-by needed
+				}
+				if !results[j].Build {
+					results[j].Build = true
+					results[j].Files = append(results[j].Files, FileMatch{
+						Reason: "triggered-by",
+						Rule:   results[i].Target,
+					})
+					changed = true
+					continue
+				}
+				// Already building from triggers — record additional source if new.
+				if !hasTriggeredBy(results[j], results[i].Target) {
+					results[j].Files = append(results[j].Files, FileMatch{
+						Reason: "triggered-by",
+						Rule:   results[i].Target,
+					})
+				}
 			}
 		}
 	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Target < results[j].Target
+	})
+	return results
+}
+
+// hasOwnBuildReason reports whether r builds from its own rules (not just triggers).
+func hasOwnBuildReason(r Result) bool {
+	for _, fm := range r.Files {
+		if fm.Reason != "triggered-by" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasTriggeredBy reports whether r already has a triggered-by entry from source.
+func hasTriggeredBy(r Result, source string) bool {
+	for _, fm := range r.Files {
+		if fm.Reason == "triggered-by" && fm.Rule == source {
+			return true
+		}
+	}
+	return false
 }
 
 func expandPatterns(patterns []string, target string) []string {

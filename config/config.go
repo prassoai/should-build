@@ -3,6 +3,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"slices"
+	"sort"
+	"strings"
 
 	"github.com/prassoai/should-build/match"
 	"gopkg.in/yaml.v3"
@@ -151,6 +154,7 @@ func validateTriggers(targets map[string]Target) error {
 }
 
 // detectCycle uses DFS to find cycles in the trigger graph.
+// The outer loop iterates targets in sorted order for deterministic error messages.
 func detectCycle(targets map[string]Target) error {
 	const (
 		white = 0 // unvisited
@@ -158,7 +162,6 @@ func detectCycle(targets map[string]Target) error {
 		black = 2 // fully explored
 	)
 	color := make(map[string]int, len(targets))
-	// parent tracks the DFS path for error reporting.
 	parent := make(map[string]string, len(targets))
 
 	var visit func(string) error
@@ -167,16 +170,12 @@ func detectCycle(targets map[string]Target) error {
 		for _, ref := range targets[name].Triggers {
 			switch color[ref] {
 			case gray:
-				// Build cycle path for the error message.
 				cycle := []string{ref, name}
 				for cur := name; parent[cur] != "" && cur != ref; cur = parent[cur] {
 					cycle = append(cycle, parent[cur])
 				}
-				// Reverse to show the forward path.
-				for i, j := 0, len(cycle)-1; i < j; i, j = i+1, j-1 {
-					cycle[i], cycle[j] = cycle[j], cycle[i]
-				}
-				return fmt.Errorf("trigger cycle: %s", formatCycle(cycle))
+				slices.Reverse(cycle)
+				return fmt.Errorf("trigger cycle: %s", strings.Join(cycle, " -> "))
 			case white:
 				parent[ref] = name
 				if err := visit(ref); err != nil {
@@ -188,7 +187,13 @@ func detectCycle(targets map[string]Target) error {
 		return nil
 	}
 
+	names := make([]string, 0, len(targets))
 	for name := range targets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
 		if color[name] == white {
 			if err := visit(name); err != nil {
 				return err
@@ -196,12 +201,4 @@ func detectCycle(targets map[string]Target) error {
 		}
 	}
 	return nil
-}
-
-func formatCycle(path []string) string {
-	result := path[0]
-	for _, p := range path[1:] {
-		result += " -> " + p
-	}
-	return result
 }

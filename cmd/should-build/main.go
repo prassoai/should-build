@@ -92,21 +92,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	// Filter to requested targets without mutating the loaded config.
-	if len(targets) > 0 {
-		filtered := make(map[string]config.Target, len(targets))
-		for _, name := range targets {
-			t, ok := cfg.Targets[name]
-			if !ok {
-				fmt.Fprintf(stderr, "error: unknown target %q\n", name)
-				return 2
-			}
-			filtered[name] = t
-		}
-		cfg = &config.Config{
-			Global:      cfg.Global,
-			UnknownFile: cfg.UnknownFile,
-			Targets:     filtered,
+	// Validate --target names without filtering the config. The full config
+	// is passed to Evaluate so that trigger propagation can expand the
+	// evaluation set beyond the named targets.
+	for _, name := range targets {
+		if _, ok := cfg.Targets[name]; !ok {
+			fmt.Fprintf(stderr, "error: unknown target %q\n", name)
+			return 2
 		}
 	}
 
@@ -132,7 +124,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		deps[name] = d
 	}
 
-	results := eval.Evaluate(cfg, changed, deps)
+	results := eval.Evaluate(cfg, changed, deps, []string(targets))
 
 	// --explain is orthogonal to the output mode: it always writes to stderr.
 	if *explain {
@@ -168,13 +160,19 @@ func writeJSON(stdout, stderr io.Writer, results []eval.Result, verbose bool) in
 	return 0
 }
 
-// stripRules returns a copy of results with Rule fields cleared.
+// stripRules returns a copy of results with Rule fields cleared for
+// file-based entries. Triggered-by entries always keep their Rule because
+// it names the trigger source — without it the reason is meaningless.
 func stripRules(results []eval.Result) []eval.Result {
 	out := make([]eval.Result, len(results))
 	for i, r := range results {
 		files := make([]eval.FileMatch, len(r.Files))
 		for j, fm := range r.Files {
-			files[j] = eval.FileMatch{Path: fm.Path, Reason: fm.Reason}
+			if fm.Reason == "triggered-by" {
+				files[j] = fm
+			} else {
+				files[j] = eval.FileMatch{Path: fm.Path, Reason: fm.Reason}
+			}
 		}
 		out[i] = eval.Result{Target: r.Target, Build: r.Build, Files: files}
 	}
@@ -205,22 +203,51 @@ func formatExplainResult(r eval.Result) string {
 	if !r.Build {
 		return "  " + r.Target + ": skip"
 	}
-	var b strings.Builder
-	noun := "files"
-	if len(r.Files) == 1 {
-		noun = "file"
+
+	var fileCount, triggerCount int
+	for _, fm := range r.Files {
+		if fm.Reason == "triggered-by" {
+			triggerCount++
+		} else {
+			fileCount++
+		}
 	}
-	fmt.Fprintf(&b, "  %s: rebuild (%d %s)", r.Target, len(r.Files), noun)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "  %s: rebuild (", r.Target)
+	if fileCount > 0 {
+		noun := "files"
+		if fileCount == 1 {
+			noun = "file"
+		}
+		fmt.Fprintf(&b, "%d %s", fileCount, noun)
+		if triggerCount > 0 {
+			b.WriteString(", ")
+		}
+	}
+	if triggerCount > 0 {
+		noun := "triggers"
+		if triggerCount == 1 {
+			noun = "trigger"
+		}
+		fmt.Fprintf(&b, "%d %s", triggerCount, noun)
+	}
+	b.WriteByte(')')
+
 	for _, fm := range r.Files {
 		b.WriteString("\n    ")
-		b.WriteString(fm.Path)
-		b.WriteString("  (")
-		b.WriteString(fm.Reason)
-		if fm.Rule != "" {
-			b.WriteString(": ")
-			b.WriteString(fm.Rule)
+		if fm.Reason == "triggered-by" {
+			fmt.Fprintf(&b, "triggered by %s", fm.Rule)
+		} else {
+			b.WriteString(fm.Path)
+			b.WriteString("  (")
+			b.WriteString(fm.Reason)
+			if fm.Rule != "" {
+				b.WriteString(": ")
+				b.WriteString(fm.Rule)
+			}
+			b.WriteByte(')')
 		}
-		b.WriteByte(')')
 	}
 	return b.String()
 }
@@ -235,11 +262,19 @@ func writeTable(w io.Writer, results []eval.Result, verbose bool) int {
 		}
 		if verbose {
 			for _, fm := range r.Files {
-				fmt.Fprintf(tw, "%s\tyes\t%s (%s: %s)\n", r.Target, fm.Path, fm.Reason, fm.Rule)
+				if fm.Reason == "triggered-by" {
+					fmt.Fprintf(tw, "%s\tyes\ttriggered by %s\n", r.Target, fm.Rule)
+				} else {
+					fmt.Fprintf(tw, "%s\tyes\t%s (%s: %s)\n", r.Target, fm.Path, fm.Reason, fm.Rule)
+				}
 			}
 		} else {
 			fm := r.Files[0]
-			fmt.Fprintf(tw, "%s\tyes\t%s (%s)\n", r.Target, fm.Path, fm.Reason)
+			if fm.Reason == "triggered-by" {
+				fmt.Fprintf(tw, "%s\tyes\ttriggered by %s\n", r.Target, fm.Rule)
+			} else {
+				fmt.Fprintf(tw, "%s\tyes\t%s (%s)\n", r.Target, fm.Path, fm.Reason)
+			}
 		}
 	}
 	tw.Flush()

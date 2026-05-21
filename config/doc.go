@@ -3,7 +3,7 @@
 // A Config describes which files trigger rebuilds of which targets.
 // It is loaded from a YAML file (typically should-build.yaml at the repo root).
 //
-// The schema has three layers:
+// The schema has four layers:
 //   - Global rules (ignore, trigger_all) that apply across all targets.
 //   - Per-target rules (include, exclude) with doublestar globs and {target} expansion.
 //   - Per-target triggers that propagate builds to other targets.
@@ -15,6 +15,11 @@
 // build whenever it builds. Triggers propagate transitively: if A triggers B
 // and B triggers C, building A also builds B and C. Cycles are rejected at
 // parse time — they are a configuration error.
+//
+// The field is named "triggers" (on the source target) rather than "depends_on"
+// (on the dependent target) because the relationship is declared at the source:
+// "building murmur-control triggers murmur-vm." This keeps the co-build
+// relationship in one place rather than scattering it across dependent targets.
 //
 // # Defaults applied by Canonicalize
 //

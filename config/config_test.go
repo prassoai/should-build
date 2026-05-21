@@ -279,10 +279,15 @@ targets:
 // TestParseTriggersCycleDetection rejects configs with cycles in the trigger
 // graph. Cycles are a config error — they must be caught at parse time, not
 // at evaluation time where they'd cause infinite loops.
+//
+// The exact cycle path is asserted to catch regressions in the DFS parent-walk
+// and reverse logic. The outer DFS loop iterates in sorted order, so the path
+// is deterministic.
 func TestParseTriggersCycleDetection(t *testing.T) {
 	tests := []struct {
-		name string
-		yaml string
+		name    string
+		yaml    string
+		wantErr string
 	}{
 		{
 			name: "direct cycle A->B->A",
@@ -295,6 +300,7 @@ targets:
     lang: none
     triggers: [a]
 `,
+			wantErr: "trigger cycle: a -> b -> a",
 		},
 		{
 			name: "transitive cycle A->B->C->A",
@@ -310,6 +316,7 @@ targets:
     lang: none
     triggers: [a]
 `,
+			wantErr: "trigger cycle: a -> b -> c -> a",
 		},
 	}
 	for _, tt := range tests {
@@ -318,8 +325,8 @@ targets:
 			if err == nil {
 				t.Fatal("expected error for trigger cycle")
 			}
-			if !strings.Contains(err.Error(), "trigger cycle") {
-				t.Errorf("error %q should mention trigger cycle", err)
+			if err.Error() != tt.wantErr {
+				t.Errorf("error = %q, want %q", err.Error(), tt.wantErr)
 			}
 		})
 	}
