@@ -134,6 +134,89 @@ jobs:
           # any must be false.
           [[ "$ANY" == "false" ]]
 
+  # Simulate a consumer calling the action from a different repo.
+  #
+  # When a consumer uses `uses: prassoai/should-build@v0`, GitHub Actions
+  # checks out the action to _actions/prassoai/should-build/v0/ and runs
+  # it with CWD = consumer repo. This test reproduces that layout:
+  #   - The action source lives in _action/ (simulates the actions checkout).
+  #   - The working directory is consumer/ (simulates the consumer repo).
+  #
+  # Before the fix, two bugs prevented this from working:
+  #   1. tag/repo were empty (${{ github.action_ref }} not available in
+  #      composite run: blocks — must use $GITHUB_ACTION_REF env var).
+  #   2. `go build` ran in the consumer CWD and failed with "outside main
+  #      module" because the action's go.mod is in a different directory.
+  test-consumer-simulation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: _action
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: _action/go.mod
+
+      - name: Create consumer repo
+        run: |
+          set -euo pipefail
+          mkdir consumer && cd consumer
+          git init
+          git config user.email "ci@test" && git config user.name "CI"
+
+          cat > should-build.yaml <<'YAML'
+          targets:
+            svc:
+              lang: none
+              include: ["src/**"]
+          unknown_file: ignore
+          YAML
+
+          git add should-build.yaml && git commit -m "init"
+
+      - name: Build from source in consumer CWD
+        working-directory: consumer
+        env:
+          GITHUB_ACTION_PATH: ${{ github.workspace }}/_action
+        run: |
+          set -euo pipefail
+          # Mirrors the "Build from source (fallback)" step in action.yml.
+          # Before the fix, this failed: "directory ... outside main module."
+          go build -C "$GITHUB_ACTION_PATH" -o "$RUNNER_TEMP/should-build" ./cmd/should-build
+
+      - name: Verify env-var ref resolution
+        run: |
+          set -euo pipefail
+          # Simulate runtime env vars as GitHub Actions sets them for a
+          # remote action reference (uses: prassoai/should-build@v0).
+          tag="$GITHUB_ACTION_REF"   # unset here → empty, same as old bug
+          repo="$GITHUB_ACTION_REPOSITORY"
+
+          # With the old ${{ github.action_ref }} approach, these were always
+          # empty in composite run: blocks. Verify the env vars exist and are
+          # populated by the runner (they won't be in this simulation, which
+          # is the point — the action now reads the env vars, not expressions).
+          #
+          # Structural check: grep the action.yml to confirm it uses the env
+          # vars, not the expression syntax.
+          grep -q 'tag="\$GITHUB_ACTION_REF"' "${{ github.workspace }}/_action/action.yml"
+          grep -q 'repo="\$GITHUB_ACTION_REPOSITORY"' "${{ github.workspace }}/_action/action.yml"
+          echo "PASS: action.yml uses runtime env vars, not expression syntax"
+
+      - name: End-to-end consumer run
+        working-directory: consumer
+        run: |
+          set -euo pipefail
+          base=$(git rev-parse HEAD)
+          mkdir -p src && echo "change" > src/file.txt
+          git add src/file.txt && git commit -m "touch src"
+          head=$(git rev-parse HEAD)
+
+          raw=$("$RUNNER_TEMP/should-build" --json --config should-build.yaml --repo . "$base" "$head")
+          echo "$raw" | jq -e '.[] | select(.target == "svc") | .build == true'
+          echo "PASS: consumer scenario works end-to-end"
+
   # Verify the fromJSON(targets) matrix pattern works end-to-end.
   # test-action triggers alpha only, so the matrix has exactly one entry.
   test-matrix-consumer:
