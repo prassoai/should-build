@@ -209,6 +209,122 @@ targets:
 	}
 }
 
+// TestParseTriggersValid verifies that a target can declare triggers to other
+// existing targets without error.
+func TestParseTriggersValid(t *testing.T) {
+	yaml := `
+targets:
+  control:
+    lang: none
+    include:
+      - "cmd/control/**"
+    triggers:
+      - vm
+      - cli
+  vm:
+    lang: none
+    include:
+      - "cmd/vm/**"
+  cli:
+    lang: none
+    include:
+      - "cmd/cli/**"
+unknown_file: ignore
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(cfg.Targets["control"].Triggers) != 2 {
+		t.Errorf("Triggers len = %d, want 2", len(cfg.Targets["control"].Triggers))
+	}
+}
+
+// TestParseTriggersUnknownTarget rejects triggers pointing to nonexistent targets.
+func TestParseTriggersUnknownTarget(t *testing.T) {
+	yaml := `
+targets:
+  api:
+    lang: none
+    triggers:
+      - nonexistent
+`
+	_, err := Parse([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for trigger to unknown target")
+	}
+	if !strings.Contains(err.Error(), "unknown target") {
+		t.Errorf("error %q should mention unknown target", err)
+	}
+}
+
+// TestParseTriggersSelfReference rejects a target that triggers itself.
+func TestParseTriggersSelfReference(t *testing.T) {
+	yaml := `
+targets:
+  api:
+    lang: none
+    triggers:
+      - api
+`
+	_, err := Parse([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for self-triggering target")
+	}
+	if !strings.Contains(err.Error(), "triggers itself") {
+		t.Errorf("error %q should mention self-trigger", err)
+	}
+}
+
+// TestParseTriggersCycleDetection rejects configs with cycles in the trigger
+// graph. Cycles are a config error — they must be caught at parse time, not
+// at evaluation time where they'd cause infinite loops.
+func TestParseTriggersCycleDetection(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "direct cycle A->B->A",
+			yaml: `
+targets:
+  a:
+    lang: none
+    triggers: [b]
+  b:
+    lang: none
+    triggers: [a]
+`,
+		},
+		{
+			name: "transitive cycle A->B->C->A",
+			yaml: `
+targets:
+  a:
+    lang: none
+    triggers: [b]
+  b:
+    lang: none
+    triggers: [c]
+  c:
+    lang: none
+    triggers: [a]
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte(tt.yaml))
+			if err == nil {
+				t.Fatal("expected error for trigger cycle")
+			}
+			if !strings.Contains(err.Error(), "trigger cycle") {
+				t.Errorf("error %q should mention trigger cycle", err)
+			}
+		})
+	}
+}
+
 // TestParseInvalidYAML rejects syntactically broken YAML.
 func TestParseInvalidYAML(t *testing.T) {
 	_, err := Parse([]byte("{{{{"))

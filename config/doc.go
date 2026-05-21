@@ -6,7 +6,15 @@
 // The schema has three layers:
 //   - Global rules (ignore, trigger_all) that apply across all targets.
 //   - Per-target rules (include, exclude) with doublestar globs and {target} expansion.
+//   - Per-target triggers that propagate builds to other targets.
 //   - An unknown_file fallback policy for files matching no rule.
+//
+// # Target triggers
+//
+// A target may declare a triggers list naming other targets that must also
+// build whenever it builds. Triggers propagate transitively: if A triggers B
+// and B triggers C, building A also builds B and C. Cycles are rejected at
+// parse time — they are a configuration error.
 //
 // # Defaults applied by Canonicalize
 //

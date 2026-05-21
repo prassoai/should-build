@@ -17,8 +17,8 @@ type Result struct {
 // FileMatch records why a changed file triggered a target.
 type FileMatch struct {
 	Path   string `json:"path"`
-	Reason string `json:"reason"`           // "go-dep", "include", "trigger-all", "unknown-file"
-	Rule   string `json:"rule,omitempty"`   // the specific glob or import path
+	Reason string `json:"reason"`           // "go-dep", "include", "trigger-all", "triggered-by", "unknown-file"
+	Rule   string `json:"rule,omitempty"`   // the specific glob, import path, or trigger source target
 }
 
 // Evaluate determines which targets need rebuilding.
@@ -56,6 +56,8 @@ func Evaluate(cfg *config.Config, changed []string, deps map[string][]string) []
 	for _, name := range names {
 		results = append(results, evaluateTarget(cfg, name, cfg.Targets[name], filtered, depSets[name]))
 	}
+
+	propagateTriggers(cfg, results)
 	return results
 }
 
@@ -104,6 +106,41 @@ func evaluateTarget(cfg *config.Config, name string, target config.Target, files
 		}
 	}
 	return r
+}
+
+// propagateTriggers applies the trigger graph: if target A builds and
+// triggers B, mark B as building too. Repeats until no new targets are
+// activated (transitive closure). The config layer guarantees no cycles.
+func propagateTriggers(cfg *config.Config, results []Result) {
+	idx := make(map[string]int, len(results))
+	for i, r := range results {
+		idx[r.Target] = i
+	}
+
+	for changed := true; changed; {
+		changed = false
+		for _, r := range results {
+			if !r.Build {
+				continue
+			}
+			for _, triggered := range cfg.Targets[r.Target].Triggers {
+				j, ok := idx[triggered]
+				if !ok {
+					continue // target filtered out by --target flag
+				}
+				if results[j].Build {
+					continue
+				}
+				results[j].Build = true
+				results[j].Files = append(results[j].Files, FileMatch{
+					Path:   r.Target,
+					Reason: "triggered-by",
+					Rule:   r.Target,
+				})
+				changed = true
+			}
+		}
+	}
 }
 
 func expandPatterns(patterns []string, target string) []string {

@@ -404,6 +404,145 @@ func TestGlobalIgnoreBeatsEverything(t *testing.T) {
 	}
 }
 
+// TestTriggerPropagation verifies that when target A builds and triggers B,
+// B is also marked as building with reason "triggered-by".
+func TestTriggerPropagation(t *testing.T) {
+	c := mustCfg(t,
+		config.Global{},
+		"ignore",
+		map[string]config.Target{
+			"control": {Include: []string{"cmd/control/**"}, Triggers: []string{"vm"}},
+			"vm":      {Include: []string{"cmd/vm/**"}},
+		},
+	)
+	results := Evaluate(c, []string{"cmd/control/main.go"}, nil)
+	for _, r := range results {
+		switch r.Target {
+		case "control":
+			if !r.Build {
+				t.Error("control should build (include match)")
+			}
+		case "vm":
+			if !r.Build {
+				t.Error("vm should build (triggered by control)")
+			}
+			if len(r.Files) != 1 || r.Files[0].Reason != "triggered-by" {
+				t.Errorf("vm reason = %v, want triggered-by", r.Files)
+			}
+			if r.Files[0].Rule != "control" {
+				t.Errorf("vm trigger rule = %q, want %q", r.Files[0].Rule, "control")
+			}
+		}
+	}
+}
+
+// TestTriggerTransitive verifies transitive propagation: A triggers B, B
+// triggers C. When A builds, both B and C must also build.
+func TestTriggerTransitive(t *testing.T) {
+	c := mustCfg(t,
+		config.Global{},
+		"ignore",
+		map[string]config.Target{
+			"a": {Include: []string{"a/**"}, Triggers: []string{"b"}},
+			"b": {Include: []string{"b/**"}, Triggers: []string{"c"}},
+			"c": {Include: []string{"c/**"}},
+		},
+	)
+	results := Evaluate(c, []string{"a/x.go"}, nil)
+	for _, r := range results {
+		if !r.Build {
+			t.Errorf("target %q should build (transitive trigger from a)", r.Target)
+		}
+	}
+	// Verify trigger chain: b triggered by a, c triggered by b.
+	idx := make(map[string]Result, len(results))
+	for _, r := range results {
+		idx[r.Target] = r
+	}
+	if idx["b"].Files[0].Rule != "a" {
+		t.Errorf("b should be triggered by a, got rule %q", idx["b"].Files[0].Rule)
+	}
+	if idx["c"].Files[0].Rule != "b" {
+		t.Errorf("c should be triggered by b, got rule %q", idx["c"].Files[0].Rule)
+	}
+}
+
+// TestTriggerNoOp verifies that triggers don't fire when the trigger source
+// target wasn't going to build. No false positives.
+func TestTriggerNoOp(t *testing.T) {
+	c := mustCfg(t,
+		config.Global{},
+		"ignore",
+		map[string]config.Target{
+			"control": {Include: []string{"cmd/control/**"}, Triggers: []string{"vm"}},
+			"vm":      {Include: []string{"cmd/vm/**"}},
+		},
+	)
+	// Change a file that doesn't match control's include.
+	results := Evaluate(c, []string{"unrelated/file.txt"}, nil)
+	for _, r := range results {
+		if r.Build {
+			t.Errorf("target %q should not build — trigger source didn't build", r.Target)
+		}
+	}
+}
+
+// TestTriggerAlreadyBuilding verifies that a target already building from its
+// own rules doesn't get a duplicate triggered-by entry.
+func TestTriggerAlreadyBuilding(t *testing.T) {
+	c := mustCfg(t,
+		config.Global{},
+		"ignore",
+		map[string]config.Target{
+			"control": {Include: []string{"shared/**"}, Triggers: []string{"vm"}},
+			"vm":      {Include: []string{"shared/**"}},
+		},
+	)
+	results := Evaluate(c, []string{"shared/lib.go"}, nil)
+	for _, r := range results {
+		if !r.Build {
+			t.Errorf("target %q should build", r.Target)
+		}
+	}
+	// vm should have its own include match, not a triggered-by entry.
+	idx := make(map[string]Result, len(results))
+	for _, r := range results {
+		idx[r.Target] = r
+	}
+	for _, fm := range idx["vm"].Files {
+		if fm.Reason == "triggered-by" {
+			t.Error("vm already builds from include — should not have triggered-by entry")
+		}
+	}
+}
+
+// TestTriggerFilteredTarget verifies that triggers to targets excluded by
+// --target filtering are silently ignored. In production, main.go loads the
+// full config (validation passes), then creates a filtered config with only
+// the requested targets. Propagation must not panic when the triggered target
+// is absent from the filtered config.
+func TestTriggerFilteredTarget(t *testing.T) {
+	// Build a valid config with both targets so validation passes.
+	full := mustCfg(t,
+		config.Global{},
+		"ignore",
+		map[string]config.Target{
+			"control": {Include: []string{"cmd/control/**"}, Triggers: []string{"vm"}},
+			"vm":      {Include: []string{"cmd/vm/**"}},
+		},
+	)
+	// Simulate --target control: remove vm from the config targets.
+	filtered := &config.Config{
+		Global:      full.Global,
+		UnknownFile: full.UnknownFile,
+		Targets:     map[string]config.Target{"control": full.Targets["control"]},
+	}
+	results := Evaluate(filtered, []string{"cmd/control/main.go"}, nil)
+	if len(results) != 1 || !results[0].Build {
+		t.Errorf("control should build, got %v", results)
+	}
+}
+
 // TestRuleFieldPopulated verifies that the Rule field captures the matching pattern.
 func TestRuleFieldPopulated(t *testing.T) {
 	c := mustCfg(t,
