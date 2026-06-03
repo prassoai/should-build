@@ -12,15 +12,21 @@ import (
 // Go implements Analyzer for Go source using "go list".
 type Go struct{}
 
-// goPackage is the subset of "go list -json" output we need.
+// goPackage is the subset of "go list -json" output we need. EmbedFiles holds
+// files pulled in by //go:embed directives (paths relative to Dir, like
+// GoFiles); without them a change to an embedded asset — e.g. a VERSION file
+// compiled into a binary — would be invisible to the dep graph and fall through
+// to the trigger_all / unknown_file fallback, rebuilding every target.
 type goPackage struct {
-	Dir      string   `json:"Dir"`
-	GoFiles  []string `json:"GoFiles"`
-	Standard bool     `json:"Standard"`
+	Dir        string   `json:"Dir"`
+	GoFiles    []string `json:"GoFiles"`
+	EmbedFiles []string `json:"EmbedFiles"`
+	Standard   bool     `json:"Standard"`
 }
 
-// Deps returns all Go source files transitively imported by importPath,
-// filtered to those under repoRoot. Standard library files are excluded.
+// Deps returns all Go source files and //go:embed assets transitively imported
+// by importPath, filtered to those under repoRoot. Standard library files are
+// excluded.
 func (Go) Deps(repoRoot, importPath string) ([]string, error) {
 	absRoot, err := filepath.Abs(repoRoot)
 	if err != nil {
@@ -47,13 +53,9 @@ func (Go) Deps(repoRoot, importPath string) ([]string, error) {
 		if pkg.Standard || pkg.Dir == "" {
 			continue
 		}
-		for _, f := range pkg.GoFiles {
-			abs := filepath.Join(pkg.Dir, f)
-			rel, err := filepath.Rel(absRoot, abs)
-			if err != nil {
-				continue
-			}
-			if outsideRoot(rel) {
+		for _, f := range append(pkg.GoFiles, pkg.EmbedFiles...) {
+			rel, err := filepath.Rel(absRoot, filepath.Join(pkg.Dir, f))
+			if err != nil || outsideRoot(rel) {
 				continue
 			}
 			files = append(files, filepath.ToSlash(rel))
@@ -66,4 +68,3 @@ func (Go) Deps(repoRoot, importPath string) ([]string, error) {
 func outsideRoot(rel string) bool {
 	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
-

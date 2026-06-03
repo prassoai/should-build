@@ -2,7 +2,9 @@
 // Go build target.
 //
 // The Go analyzer uses "go list -json -deps" to resolve the full transitive
-// dependency graph, then returns file paths relative to the repo root.
+// dependency graph, then returns file paths relative to the repo root. Both
+// Go source files (GoFiles) and //go:embed assets (EmbedFiles) are returned,
+// so a change to an embedded file rebuilds the binaries that embed it.
 //
 // Files outside the repo root (standard library packages, vendored modules
 // fetched to GOMODCACHE, replace-directive targets above the repo) are
