@@ -182,6 +182,76 @@ func TestUnknownFileIgnore(t *testing.T) {
 	}
 }
 
+// TestUnknownFileScopedToDependingTarget locks in the central no-over-build
+// requirement: a changed file that lives in one Go target's import closure
+// (and no other's) rebuilds only that target — even under unknown_file=
+// trigger_all. The dep graph correctly attributes the file to its owner via
+// "go-dep"; the bug was that the same file looked "unknown" to every other
+// target, so trigger_all rebuilt all of them. A file some target depends on is
+// not an orphan, so the unknown-file fallback must not fire for targets that
+// don't depend on it. This mirrors the real CI regression where a change to
+// internal packages imported by murmur-api/murmur-control rebuilt murmur-ui.
+func TestUnknownFileScopedToDependingTarget(t *testing.T) {
+	c := mustCfg(t,
+		config.Global{},
+		"trigger_all",
+		map[string]config.Target{
+			"api": {Path: "./cmd/api"},
+			"ui":  {Path: "./cmd/ui"},
+		},
+	)
+	// internal/server/handler.go is in api's import closure but not ui's.
+	deps := map[string][]string{
+		"api": {"cmd/api/main.go", "internal/server/handler.go"},
+		"ui":  {"cmd/ui/main.go", "gen/ui/status.go"},
+	}
+	results := Evaluate(c, []string{"internal/server/handler.go"}, deps, nil)
+
+	idx := make(map[string]Result, len(results))
+	for _, r := range results {
+		idx[r.Target] = r
+	}
+	if !idx["api"].Build {
+		t.Error("api should build — the changed file is in its import closure")
+	}
+	if idx["api"].Files[0].Reason != "go-dep" {
+		t.Errorf("api reason = %q, want %q", idx["api"].Files[0].Reason, "go-dep")
+	}
+	if idx["ui"].Build {
+		t.Error("ui should NOT build — it does not depend on the changed file; a file owned by another target is not an orphan")
+	}
+}
+
+// TestUnknownFileOrphanStillTriggersAll verifies the safety net is preserved:
+// a file no target accounts for (not in any dep graph, not matched by any
+// include) still triggers every target under trigger_all — even when the diff
+// also contains files that are claimed by specific targets. Erring on the side
+// of rebuilding for genuinely unknown files is the whole point of trigger_all.
+func TestUnknownFileOrphanStillTriggersAll(t *testing.T) {
+	c := mustCfg(t,
+		config.Global{},
+		"trigger_all",
+		map[string]config.Target{
+			"api": {Path: "./cmd/api"},
+			"ui":  {Path: "./cmd/ui"},
+		},
+	)
+	deps := map[string][]string{
+		"api": {"cmd/api/main.go"},
+		"ui":  {"cmd/ui/main.go"},
+	}
+	// mystery.cfg is in nobody's import closure → genuine orphan.
+	results := Evaluate(c, []string{"mystery.cfg"}, deps, nil)
+	for _, r := range results {
+		if !r.Build {
+			t.Errorf("target %q should build — orphan file triggers all", r.Target)
+		}
+		if r.Files[0].Reason != "unknown-file" {
+			t.Errorf("target %q reason = %q, want %q", r.Target, r.Files[0].Reason, "unknown-file")
+		}
+	}
+}
+
 // TestExcludeBeatsInclude verifies that exclude is checked before include
 // in the precedence chain. A file matching both exclude and include does
 // not trigger the target.
