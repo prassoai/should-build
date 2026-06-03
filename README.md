@@ -215,8 +215,15 @@ rule set to the source target name:
 3. `target.include` — triggers target
 4. Dependency graph — file is in a package the target imports
 5. `global.trigger_all` — triggers all non-excluded targets
-6. `unknown_file` — fallback policy
+6. `unknown_file` — fallback policy for **orphan** files only
 7. `target.triggers` — after per-target evaluation, propagate builds transitively
+
+A file is an **orphan** only if *no* target accounts for it — it matches no
+target's `include`, is in no target's dependency graph, and matches no
+`global.trigger_all` pattern. The `unknown_file: trigger_all` safety net fires
+for orphans alone. A file that some target depends on is not an orphan, so it
+rebuilds only the targets that actually reference it (plus their `triggers`) —
+a change scoped to one service's files does not rebuild every target.
 
 **Glob syntax.** Patterns use [doublestar](https://github.com/bmatcuk/doublestar)
 globs, not gitignore semantics. `*` matches within a single path segment;

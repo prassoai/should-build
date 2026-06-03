@@ -63,15 +63,61 @@ func Evaluate(cfg *config.Config, changed []string, deps map[string][]string, on
 	}
 	sort.Strings(names)
 
+	// An orphan is a file no target accounts for. The unknown_file fallback
+	// only applies to orphans; a file claimed by some target must not trigger
+	// the targets that don't reference it. Computed once over all targets so a
+	// file owned by a target outside `only` still counts as claimed.
+	orphan := orphanSet(cfg, filtered, depSets)
+
 	results := make([]Result, 0, len(names))
 	for _, name := range names {
-		results = append(results, evaluateTarget(cfg, name, cfg.Targets[name], filtered, depSets[name]))
+		results = append(results, evaluateTarget(cfg, name, cfg.Targets[name], filtered, depSets[name], orphan))
 	}
 
-	return propagateTriggers(cfg, filtered, depSets, results)
+	return propagateTriggers(cfg, filtered, depSets, orphan, results)
 }
 
-func evaluateTarget(cfg *config.Config, name string, target config.Target, files []string, depSet map[string]struct{}) Result {
+// orphanSet returns the files that no target accounts for: not matched by
+// global trigger_all, not matched by any target's include patterns, and not
+// present in any target's dependency graph. Only orphans fall through to the
+// unknown_file policy. A file claimed by even one target is scoped to that
+// target (plus its triggers), so a change touching one service's files no
+// longer rebuilds every target. Target excludes deliberately do not count: an
+// exclude suppresses a single target's reaction to a file, not the global
+// knowledge of what the file affects.
+func orphanSet(cfg *config.Config, files []string, depSets map[string]map[string]struct{}) map[string]struct{} {
+	includes := make(map[string][]string, len(cfg.Targets))
+	for name, t := range cfg.Targets {
+		includes[name] = expandPatterns(t.Include, name)
+	}
+
+	orphan := make(map[string]struct{})
+	for _, f := range files {
+		if !claimed(cfg, includes, depSets, f) {
+			orphan[f] = struct{}{}
+		}
+	}
+	return orphan
+}
+
+// claimed reports whether any target accounts for f via global trigger_all, an
+// include pattern, or its dependency graph.
+func claimed(cfg *config.Config, includes map[string][]string, depSets map[string]map[string]struct{}, f string) bool {
+	if ok, _, _ := match.MatchAny(cfg.Global.TriggerAll, f); ok {
+		return true
+	}
+	for name := range cfg.Targets {
+		if ok, _, _ := match.MatchAny(includes[name], f); ok {
+			return true
+		}
+		if _, ok := depSets[name][f]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func evaluateTarget(cfg *config.Config, name string, target config.Target, files []string, depSet map[string]struct{}, orphan map[string]struct{}) Result {
 	r := Result{
 		Target: name,
 		Files:  []FileMatch{}, // never nil — JSON encodes as []
@@ -109,8 +155,11 @@ func evaluateTarget(cfg *config.Config, name string, target config.Target, files
 			continue
 		}
 
-		// Precedence step 6: unknown file fallback.
-		if cfg.UnknownFile == "trigger_all" {
+		// Precedence step 6: unknown file fallback. Only genuine orphans —
+		// files no target accounts for — reach the fallback. A file owned by
+		// another target arrives here for the targets that don't reference it,
+		// but it is not an orphan, so it must not trigger them.
+		if _, isOrphan := orphan[f]; isOrphan && cfg.UnknownFile == "trigger_all" {
 			r.Build = true
 			r.Files = append(r.Files, FileMatch{Path: f, Reason: "unknown-file"})
 		}
@@ -126,7 +175,7 @@ func evaluateTarget(cfg *config.Config, name string, target config.Target, files
 // get a redundant triggered-by entry.
 //
 // Returns a new slice sorted by target name. The input slice is not modified.
-func propagateTriggers(cfg *config.Config, files []string, depSets map[string]map[string]struct{}, initial []Result) []Result {
+func propagateTriggers(cfg *config.Config, files []string, depSets map[string]map[string]struct{}, orphan map[string]struct{}, initial []Result) []Result {
 	results := make([]Result, len(initial))
 	copy(results, initial)
 
@@ -147,7 +196,7 @@ func propagateTriggers(cfg *config.Config, files []string, depSets map[string]ma
 				if !inSet {
 					// Triggered target not yet evaluated — evaluate and add.
 					t := cfg.Targets[triggered]
-					r := evaluateTarget(cfg, triggered, t, files, depSets[triggered])
+					r := evaluateTarget(cfg, triggered, t, files, depSets[triggered], orphan)
 					if !hasOwnBuildReason(r) {
 						r.Build = true
 						r.Files = append(r.Files, FileMatch{
