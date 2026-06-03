@@ -54,6 +54,29 @@ func TestGoDepsTransitive(t *testing.T) {
 	}
 }
 
+// TestGoDepsIncludesEmbeds verifies that files pulled in via //go:embed are
+// reported as dependencies. This is the requirement that fixes the bug where a
+// change to an embedded asset (e.g. a VERSION file compiled into a binary) was
+// invisible to the dep graph, so it fell through to trigger_all and rebuilt
+// every target instead of only the binary that embeds it.
+func TestGoDepsIncludesEmbeds(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/test\n\ngo 1.23\n")
+	writeFile(t, filepath.Join(dir, "cmd", "app", "main.go"),
+		"package main\n\nimport (\n\t_ \"embed\"\n)\n\n//go:embed version.txt\nvar version string\n\nfunc main() { _ = version }\n")
+	writeFile(t, filepath.Join(dir, "cmd", "app", "version.txt"), "1.2\n")
+
+	a := Go{}
+	deps, err := a.Deps(dir, "./cmd/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"cmd/app/main.go", "cmd/app/version.txt"}
+	if !stringsEqual(deps, want) {
+		t.Errorf("got %v, want %v", deps, want)
+	}
+}
+
 // TestGoDepsExcludesStdlib verifies that standard library files are not included.
 func TestGoDepsExcludesStdlib(t *testing.T) {
 	dir := t.TempDir()
