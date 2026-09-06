@@ -14,9 +14,11 @@ this repo. It downloads a prebuilt binary from the matching GitHub release (with
 SHA-256 checksum verification), falling back to building from source if the
 binary isn't available for the runner's platform. Outputs are matrix-friendly.
 
-> **Note:** The checkout step must use `fetch-depth: 0` because `should-build`
-> runs `git diff` between the base and head commits — a shallow clone won't
-> have the base commit.
+The checkout must contain the base and head commits and the source tree to
+analyze. Full history works, but is not required: a PR merge checkout at depth 2
+contains its parents, and a shallow main checkout can fetch the chosen base SHA
+explicitly. `should-build` compares the two endpoint trees without walking their
+ancestry. The example below uses full history for arbitrary refs.
 
 ```yaml
 jobs:
@@ -65,6 +67,32 @@ GitHub treats as a workflow error unless the job is skipped.
 | `only` | no | | Comma-separated target names to evaluate, no whitespace (empty = all) |
 | `repo` | no | `.` | Repository root path |
 | `verbose` | no | `false` | Include per-file match rules in JSON output |
+| `setup-go` | no | `true` | Install Go for source fallback; set `false` when the caller provisions Go |
+
+Go targets require the consumer project's Go toolchain and module dependencies
+even when should-build itself is downloaded as a prebuilt binary. Callers can
+configure that toolchain once and reuse it for source fallback:
+
+```yaml
+- uses: actions/setup-go@v5
+  with:
+    go-version-file: go.mod
+- uses: prassoai/should-build@v0
+  with:
+    base: ${{ steps.shas.outputs.base }}
+    head: ${{ steps.shas.outputs.head }}
+    setup-go: "false"
+```
+
+With `setup-go: "false"`, the caller's Go must also satisfy this action's
+`go.mod` when a source build is needed. Local, branch, and commit-SHA action
+references build their exact source; version references try checksummed release
+assets first. The action passes its ref and repository through explicit step
+environment bindings so nested shell steps can resolve the intended release.
+
+All Go targets share one `go list -json -deps` invocation. Each target retains
+its own transitive package closure, including embedded assets, even when target
+patterns overlap or multiple targets refer to the same package.
 
 ### Outputs
 

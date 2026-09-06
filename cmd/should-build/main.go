@@ -26,6 +26,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -108,20 +109,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	// Compute dependency graphs for Go targets.
-	// Failure is a hard error — silently skipping hides misconfiguration.
-	var analyzer depgraph.Go
+	var paths []string
+	for _, target := range cfg.Targets {
+		if target.Lang == "go" && target.Path != "" {
+			paths = append(paths, target.Path)
+		}
+	}
+	slices.Sort(paths)
+	graphs, err := (depgraph.Go{}).DepsAll(*repoPath, slices.Compact(paths))
+	if err != nil {
+		fmt.Fprintf(stderr, "error: dep graphs: %v\n", err)
+		return 2
+	}
 	deps := make(map[string][]string)
-	for name, t := range cfg.Targets {
-		if t.Lang != "go" || t.Path == "" {
-			continue
+	for name, target := range cfg.Targets {
+		if target.Lang == "go" {
+			deps[name] = graphs[target.Path]
 		}
-		d, err := analyzer.Deps(*repoPath, t.Path)
-		if err != nil {
-			fmt.Fprintf(stderr, "error: dep graph for %s: %v\n", name, err)
-			return 2
-		}
-		deps[name] = d
 	}
 
 	results := eval.Evaluate(cfg, changed, deps, []string(targets))
