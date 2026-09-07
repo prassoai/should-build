@@ -12,7 +12,9 @@ target: rebuild, or skip.
 The easiest way to use `should-build` in CI is the composite action hosted in
 this repo. It downloads a prebuilt binary from the matching GitHub release (with
 SHA-256 checksum verification), falling back to building from source if the
-binary isn't available for the runner's platform. Outputs are matrix-friendly.
+binary isn't available for the runner's platform. Explicit digest pins instead
+require the download to succeed and match the supplied digest. Outputs are
+matrix-friendly.
 
 The checkout must contain the base and head commits and the source tree to
 analyze. Full history works, but is not required: a PR merge checkout at depth 2
@@ -68,6 +70,8 @@ GitHub treats as a workflow error unless the job is skipped.
 | `repo` | no | `.` | Repository root path |
 | `verbose` | no | `false` | Include per-file match rules in JSON output |
 | `setup-go` | no | `true` | Install Go for source fallback; set `false` when the caller provisions Go |
+| `release-tag` | no | | Exact `vMAJOR.MINOR` or `vMAJOR.MINOR.PATCH` release tag (optional prerelease suffix); requires `binary-sha256` |
+| `binary-sha256` | no | | Expected 64-character hexadecimal SHA-256 for the runner's release binary; requires `release-tag` |
 
 Go targets require the consumer project's Go toolchain and module dependencies
 even when should-build itself is downloaded as a prebuilt binary. Callers can
@@ -86,9 +90,43 @@ configure that toolchain once and reuse it for source fallback:
 
 With `setup-go: "false"`, the caller's Go must also satisfy this action's
 `go.mod` when a source build is needed. Local, branch, and commit-SHA action
-references build their exact source; version references try checksummed release
-assets first. The action passes its ref and repository through explicit step
-environment bindings so nested shell steps can resolve the intended release.
+references build their exact source unless both release pin inputs are supplied;
+version references try checksummed release assets first. The action passes its
+ref and repository through explicit step environment bindings so nested shell
+steps can resolve the intended release.
+
+### Digest-pinned release binaries
+
+Pin the action code to a reviewed full commit SHA and supply an independently
+reviewed binary digest to use a prebuilt executable without trusting a movable
+action tag. Replace both placeholders below before using this example:
+
+```yaml
+- uses: prassoai/should-build@<reviewed-commit-sha>
+  with:
+    base: ${{ steps.shas.outputs.base }}
+    head: ${{ steps.shas.outputs.head }}
+    release-tag: v0.6
+    binary-sha256: "<reviewed-64-character-sha256>"
+```
+
+The action selects `should-build-<os>-<arch>` for the current runner, so pin the
+digest for that specific asset (for example, `should-build-linux-amd64` for a
+Linux x64 runner). A multi-platform matrix must supply the corresponding digest
+for each platform. The digest identifies the release executable, which can be
+from a different revision than the pinned action wrapper.
+
+In this mode, the action downloads only that binary and compares its SHA-256
+with the workflow's pin. It does not fetch the release's `checksums.txt` or resolve
+a floating major tag. Missing or malformed inputs, download failures, and digest
+mismatches fail the action without selecting a source fallback or running the
+download. The caller may still apply its own error-handling policy.
+
+Review the digest and binary provenance when updating the pin; fetching an
+expected checksum from the same release at runtime would not protect against
+replacement of both assets. The action code must also stay SHA-pinned, since a
+binary digest cannot protect verification logic loaded from a movable action tag.
+Without these inputs, the existing version-tag and source-build behavior remains.
 
 All Go targets share one `go list -json -deps` invocation. Each target retains
 its own transitive package closure, including embedded assets, even when target
