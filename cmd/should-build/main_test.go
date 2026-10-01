@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -467,6 +468,90 @@ unknown_file: ignore
 	// "other" should NOT appear — not in --target and not triggered.
 	if strings.Contains(out, `"other"`) {
 		t.Errorf("output should not contain other target:\n%s", out)
+	}
+}
+
+// TestRunExplicitSelection exercises selection: explicit end-to-end over two
+// real commit ranges, reproducing the case the mode was built for: a VM image
+// bake that must run when its Packer recipe changes and at no other time.
+//
+// The first range is the one that used to waste ~90 machine-minutes a time —
+// a go.mod bump plus a file no target claims. Both are repo-wide signals that
+// name none of the image's inputs, so the explicit target must skip while the
+// ordinary targets still fail open on them. The second range touches the
+// recipe itself, which must select it.
+func TestRunExplicitSelection(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init")
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+	gitRun(t, dir, "config", "user.name", "Test")
+
+	writeFile(t, filepath.Join(dir, "should-build.yaml"), `
+global:
+  trigger_all:
+    - "go.mod"
+unknown_file: trigger_all
+targets:
+  api:
+    lang: none
+    include:
+      - "cmd/api/**"
+  base-images:
+    lang: none
+    selection: explicit
+    include:
+      - "terraform/packer/**"
+    exclude:
+      - "terraform/packer/tests/**"
+`)
+	writeFile(t, filepath.Join(dir, "terraform", "packer", "gce.pkr.hcl"), "build {}")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "initial")
+	base := gitSHA(t, dir, "HEAD")
+
+	writeFile(t, filepath.Join(dir, "go.mod"), "module x\n")
+	writeFile(t, filepath.Join(dir, "native", "App.swift"), "// orphan")
+	writeFile(t, filepath.Join(dir, "terraform", "packer", "tests", "smoke.sh"), "true")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "repo-wide churn")
+	churn := gitSHA(t, dir, "HEAD")
+
+	writeFile(t, filepath.Join(dir, "terraform", "packer", "gce.pkr.hcl"), "build { provisioner {} }")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "change the recipe")
+	recipe := gitSHA(t, dir, "HEAD")
+
+	build := func(t *testing.T, from, to string) map[string]bool {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"--repo", dir, "--json", "--verbose", from, to}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit code %d, stderr: %s", code, stderr.String())
+		}
+		var results []eval.Result
+		if err := json.Unmarshal(stdout.Bytes(), &results); err != nil {
+			t.Fatalf("decoding output %q: %v", stdout.String(), err)
+		}
+		got := make(map[string]bool, len(results))
+		for _, r := range results {
+			got[r.Target] = r.Build
+		}
+		return got
+	}
+
+	churnBuilds := build(t, base, churn)
+	if !churnBuilds["api"] {
+		t.Error("api should build — go.mod matches trigger_all and native/ is an orphan")
+	}
+	if churnBuilds["base-images"] {
+		t.Error("base-images must not build: go.mod, an orphan file and an excluded recipe test name none of its inputs")
+	}
+
+	recipeBuilds := build(t, churn, recipe)
+	if !recipeBuilds["base-images"] {
+		t.Error("base-images should build — its recipe changed")
+	}
+	if recipeBuilds["api"] {
+		t.Error("api must not build: the recipe file is claimed by base-images, so it is not an orphan")
 	}
 }
 

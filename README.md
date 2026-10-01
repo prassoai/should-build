@@ -237,6 +237,53 @@ targets:
       - "web/**"
 ```
 
+### Selection modes
+
+`should-build` fails open by default: `global.trigger_all` and the
+`unknown_file` fallback reach every target, so an unrecognized change rebuilds
+everything. That is the right trade for a build measured in minutes and the
+wrong one for a target measured in machine-hours — a multi-cloud VM image bake
+selected by an orphaned test fixture is pure waste.
+
+Set `selection: explicit` on such a target to opt it out of exactly those two
+repo-wide rules:
+
+```yaml
+targets:
+  base-images:
+    lang: none
+    selection: explicit    # default: fail_open
+    include:
+      - "terraform/packer/**"
+    exclude:
+      - "terraform/packer/tests/**"
+      - "terraform/packer/**/*.md"
+```
+
+An explicit target is selected only by rules that name its own inputs:
+
+| Rule | `fail_open` (default) | `explicit` |
+|------|----------------------|------------|
+| `global.ignore` | file invisible | file invisible |
+| `target.exclude` | opts out | opts out |
+| `target.include` | selects | selects |
+| Dependency graph | selects | selects |
+| `global.trigger_all` | selects | **never selects** |
+| `unknown_file: trigger_all` | selects (orphans) | **never selects** |
+| `target.triggers` from another target | selects | selects |
+
+The mode is per-target. Every other target keeps its fail-open behavior, and
+`global.ignore` is unchanged — there is no global switch to flip.
+
+An explicit target still *claims* its `include` patterns for orphan
+classification, so declaring an expensive target's inputs also stops those
+files reaching every other target's `unknown_file` fallback.
+
+Because the failure direction of `explicit` is a target that silently never
+builds, `should-build` rejects an explicit target nothing can select: no
+`include` patterns, no Go dependency graph, and no incoming trigger is a
+config error, reported at parse time.
+
 ### Target triggers
 
 A target can declare `triggers:` — a list of other targets that must also
@@ -283,6 +330,10 @@ rule set to the source target name:
 5. `global.trigger_all` — triggers all non-excluded targets
 6. `unknown_file` — fallback policy for **orphan** files only
 7. `target.triggers` — after per-target evaluation, propagate builds transitively
+
+Steps 5 and 6 are the repo-wide fallbacks — they select a target without
+naming any of its inputs. A target with `selection: explicit` skips both; see
+[Selection modes](#selection-modes).
 
 A file is an **orphan** only if *no* target accounts for it — it matches no
 target's `include`, is in no target's dependency graph, and matches no

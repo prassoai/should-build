@@ -12,6 +12,12 @@
 //  5. global.trigger_all — file triggers all non-excluded targets.
 //  6. unknown_file policy — fallback for files matching no rule.
 //
+// Steps 5 and 6 are the repo-wide fallbacks: they select a target without
+// naming any of its inputs. A target with selection: explicit skips both, so
+// it is selected only by steps 3, 4 and trigger propagation. Steps 1 and 2
+// apply identically in either mode, as does every other target's fail-open
+// behavior — the mode is per-target.
+//
 // After per-target evaluation, trigger propagation activates additional
 // targets: if target A builds and declares triggers: [B], then B is also
 // marked as building with reason "triggered-by". Propagation is transitive

@@ -207,10 +207,7 @@ func TestUnknownFileScopedToDependingTarget(t *testing.T) {
 	}
 	results := Evaluate(c, []string{"internal/server/handler.go"}, deps, nil)
 
-	idx := make(map[string]Result, len(results))
-	for _, r := range results {
-		idx[r.Target] = r
-	}
+	idx := byTarget(results)
 	if !idx["api"].Build {
 		t.Error("api should build — the changed file is in its import closure")
 	}
@@ -525,10 +522,7 @@ func TestTriggerTransitive(t *testing.T) {
 		}
 	}
 	// Verify trigger chain: b triggered by a, c triggered by b.
-	idx := make(map[string]Result, len(results))
-	for _, r := range results {
-		idx[r.Target] = r
-	}
+	idx := byTarget(results)
 	if idx["b"].Files[0].Rule != "a" {
 		t.Errorf("b should be triggered by a, got rule %q", idx["b"].Files[0].Rule)
 	}
@@ -575,10 +569,7 @@ func TestTriggerAlreadyBuilding(t *testing.T) {
 		}
 	}
 	// vm should have its own include match, not a triggered-by entry.
-	idx := make(map[string]Result, len(results))
-	for _, r := range results {
-		idx[r.Target] = r
-	}
+	idx := byTarget(results)
 	for _, fm := range idx["vm"].Files {
 		if fm.Reason == "triggered-by" {
 			t.Error("vm already builds from include — should not have triggered-by entry")
@@ -604,10 +595,7 @@ func TestTriggerExpandsTargetFilter(t *testing.T) {
 	// Only evaluate "control" initially, but vm should be pulled in via trigger.
 	results := Evaluate(c, []string{"cmd/control/main.go"}, nil, []string{"control"})
 
-	idx := make(map[string]Result, len(results))
-	for _, r := range results {
-		idx[r.Target] = r
-	}
+	idx := byTarget(results)
 
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results (control + vm), got %d: %v", len(results), results)
@@ -639,10 +627,7 @@ func TestTriggerExpandsWithOwnRules(t *testing.T) {
 	// vm should be pulled in via trigger AND have its own include match.
 	results := Evaluate(c, []string{"cmd/control/main.go", "shared/lib.go"}, nil, []string{"control"})
 
-	idx := make(map[string]Result, len(results))
-	for _, r := range results {
-		idx[r.Target] = r
-	}
+	idx := byTarget(results)
 
 	if !idx["vm"].Build {
 		t.Fatal("vm should build")
@@ -665,18 +650,15 @@ func TestTriggerMultipleSources(t *testing.T) {
 		config.Global{},
 		"ignore",
 		map[string]config.Target{
-			"a":      {Include: []string{"a/**"}, Triggers: []string{"c"}},
-			"b":      {Include: []string{"b/**"}, Triggers: []string{"c"}},
-			"c":      {Include: []string{"c/**"}},
+			"a": {Include: []string{"a/**"}, Triggers: []string{"c"}},
+			"b": {Include: []string{"b/**"}, Triggers: []string{"c"}},
+			"c": {Include: []string{"c/**"}},
 		},
 	)
 	// Both a and b build, both trigger c.
 	results := Evaluate(c, []string{"a/x.go", "b/y.go"}, nil, nil)
 
-	idx := make(map[string]Result, len(results))
-	for _, r := range results {
-		idx[r.Target] = r
-	}
+	idx := byTarget(results)
 
 	if !idx["c"].Build {
 		t.Fatal("c should build (triggered by a and b)")
@@ -693,6 +675,241 @@ func TestTriggerMultipleSources(t *testing.T) {
 	}
 	if !sources["a"] || !sources["b"] {
 		t.Errorf("expected triggered-by from both a and b, got %v", sources)
+	}
+}
+
+// byTarget indexes results for assertions that name specific targets.
+func byTarget(results []Result) map[string]Result {
+	idx := make(map[string]Result, len(results))
+	for _, r := range results {
+		idx[r.Target] = r
+	}
+	return idx
+}
+
+// TestExplicitSelectionIgnoresTriggerAll is the central requirement of the
+// explicit mode: global.trigger_all names no target's inputs, so it must not
+// select an explicit one. This is the real regression — a go.mod bump, or a
+// touched .github workflow, repeatedly launched a half-hour three-cloud image
+// bake that no change to the image recipe had asked for.
+func TestExplicitSelectionIgnoresTriggerAll(t *testing.T) {
+	c := mustCfg(t,
+		config.Global{TriggerAll: []string{"go.mod", ".github/**"}},
+		"ignore",
+		map[string]config.Target{
+			"api":         {Path: "./cmd/api"},
+			"base-images": {Selection: config.SelectionExplicit, Include: []string{"terraform/packer/**"}},
+		},
+	)
+	idx := byTarget(Evaluate(c, []string{"go.mod", ".github/workflows/deploy.yaml"}, nil, nil))
+
+	if !idx["api"].Build {
+		t.Error("api should build — fail-open targets still select on trigger_all")
+	}
+	if idx["base-images"].Build {
+		t.Errorf("base-images must not build: trigger_all names none of its inputs, got %v", idx["base-images"].Files)
+	}
+}
+
+// TestExplicitSelectionIgnoresUnknownFile verifies that the unknown_file
+// fallback never reaches an explicit target. An orphan — a file no target
+// accounts for, such as a new top-level directory — is precisely the case the
+// fallback exists to over-build for, and precisely the case an expensive
+// target must not pay for.
+func TestExplicitSelectionIgnoresUnknownFile(t *testing.T) {
+	c := mustCfg(t,
+		config.Global{},
+		"trigger_all",
+		map[string]config.Target{
+			"api":         {Path: "./cmd/api"},
+			"base-images": {Selection: config.SelectionExplicit, Include: []string{"terraform/packer/**"}},
+		},
+	)
+	deps := map[string][]string{"api": {"cmd/api/main.go"}}
+	idx := byTarget(Evaluate(c, []string{"native/App.swift"}, deps, nil))
+
+	if !idx["api"].Build {
+		t.Error("api should build — orphan files still trigger fail-open targets")
+	}
+	if idx["api"].Files[0].Reason != "unknown-file" {
+		t.Errorf("api reason = %q, want %q", idx["api"].Files[0].Reason, "unknown-file")
+	}
+	if idx["base-images"].Build {
+		t.Errorf("base-images must not build from an orphan file, got %v", idx["base-images"].Files)
+	}
+}
+
+// TestExplicitSelectionInclude verifies the mode is an opt-out from the
+// repo-wide rules only: a file matching the target's own include patterns
+// still selects it, with the ordinary "include" reason. Without this the mode
+// would be indistinguishable from deleting the target.
+func TestExplicitSelectionInclude(t *testing.T) {
+	c := mustCfg(t,
+		config.Global{},
+		"trigger_all",
+		map[string]config.Target{
+			"base-images": {Selection: config.SelectionExplicit, Include: []string{"terraform/packer/**"}},
+		},
+	)
+	results := Evaluate(c, []string{"terraform/packer/gce.pkr.hcl"}, nil, nil)
+	if !results[0].Build {
+		t.Fatal("base-images should build — the changed file matches its include")
+	}
+	if results[0].Files[0].Reason != "include" {
+		t.Errorf("reason = %q, want %q", results[0].Files[0].Reason, "include")
+	}
+	if results[0].Files[0].Rule != "terraform/packer/**" {
+		t.Errorf("rule = %q, want %q", results[0].Files[0].Rule, "terraform/packer/**")
+	}
+}
+
+// TestExplicitSelectionExclude verifies that exclude still carves holes in an
+// explicit target's include patterns. The recipe's own tests and docs live
+// under the recipe directory but cannot change what a baked image contains,
+// so excluding them must leave the target unselected rather than fall through
+// to the unknown_file fallback — the file is claimed, not orphaned.
+func TestExplicitSelectionExclude(t *testing.T) {
+	c := mustCfg(t,
+		config.Global{},
+		"trigger_all",
+		map[string]config.Target{
+			"base-images": {
+				Selection: config.SelectionExplicit,
+				Include:   []string{"terraform/packer/**"},
+				Exclude:   []string{"terraform/packer/tests/**", "terraform/packer/**/*.md"},
+			},
+		},
+	)
+	results := Evaluate(c, []string{"terraform/packer/tests/smoke_test.sh", "terraform/packer/README.md"}, nil, nil)
+	if results[0].Build {
+		t.Errorf("excluded recipe files must not select base-images, got %v", results[0].Files)
+	}
+}
+
+// TestExplicitSelectionDepGraph verifies that a language dependency graph
+// still selects an explicit target. A Go import closure names the target's
+// inputs exactly — it is the opposite of a repo-wide fallback — so the mode
+// has no reason to suppress it.
+func TestExplicitSelectionDepGraph(t *testing.T) {
+	c := mustCfg(t,
+		config.Global{TriggerAll: []string{"go.mod"}},
+		"trigger_all",
+		map[string]config.Target{
+			"vm": {Path: "./cmd/vm", Selection: config.SelectionExplicit},
+		},
+	)
+	deps := map[string][]string{"vm": {"cmd/vm/main.go", "internal/boot/boot.go"}}
+	results := Evaluate(c, []string{"internal/boot/boot.go"}, deps, nil)
+	if !results[0].Build {
+		t.Fatal("vm should build — the changed file is in its import closure")
+	}
+	if results[0].Files[0].Reason != "go-dep" {
+		t.Errorf("reason = %q, want %q", results[0].Files[0].Reason, "go-dep")
+	}
+}
+
+// TestExplicitSelectionStillTriggered verifies that trigger propagation still
+// reaches an explicit target. A triggers edge names the target outright — it
+// is a deliberate co-build declaration, not a repo-wide fallback — so a
+// control-plane change that must ship with a matching image still bakes one.
+func TestExplicitSelectionStillTriggered(t *testing.T) {
+	c := mustCfg(t,
+		config.Global{},
+		"ignore",
+		map[string]config.Target{
+			"control":     {Include: []string{"cmd/control/**"}, Triggers: []string{"base-images"}},
+			"base-images": {Selection: config.SelectionExplicit, Include: []string{"terraform/packer/**"}},
+		},
+	)
+	idx := byTarget(Evaluate(c, []string{"cmd/control/main.go"}, nil, nil))
+	if !idx["base-images"].Build {
+		t.Fatal("base-images should build — control triggers it")
+	}
+	if idx["base-images"].Files[0].Reason != "triggered-by" || idx["base-images"].Files[0].Rule != "control" {
+		t.Errorf("base-images files = %v, want triggered-by control", idx["base-images"].Files)
+	}
+}
+
+// TestExplicitSelectionClaimsItsFiles verifies that an explicit target still
+// claims its include patterns for orphan classification. Declaring an
+// expensive target's inputs must also tell every other target those files are
+// accounted for; otherwise a recipe change would orphan-trigger all 25 other
+// targets while the one target that owns it builds for the right reason.
+func TestExplicitSelectionClaimsItsFiles(t *testing.T) {
+	c := mustCfg(t,
+		config.Global{},
+		"trigger_all",
+		map[string]config.Target{
+			"api":         {Path: "./cmd/api"},
+			"base-images": {Selection: config.SelectionExplicit, Include: []string{"terraform/packer/**"}},
+		},
+	)
+	deps := map[string][]string{"api": {"cmd/api/main.go"}}
+	idx := byTarget(Evaluate(c, []string{"terraform/packer/gce.pkr.hcl"}, deps, nil))
+
+	if !idx["base-images"].Build {
+		t.Error("base-images should build — the recipe changed")
+	}
+	if idx["api"].Build {
+		t.Errorf("api must not build: the recipe file is claimed by base-images, not an orphan, got %v", idx["api"].Files)
+	}
+}
+
+// TestGlobalIgnoreAppliesToExplicitTarget verifies that global.ignore is
+// unchanged by the mode. It is a repo-wide rule, but it only ever suppresses
+// builds, so an explicit target has no reason to opt out of it — and a file
+// ignored globally must stay invisible to every target in either mode.
+func TestGlobalIgnoreAppliesToExplicitTarget(t *testing.T) {
+	c := mustCfg(t,
+		config.Global{Ignore: []string{"**/*.md"}},
+		"trigger_all",
+		map[string]config.Target{
+			"base-images": {Selection: config.SelectionExplicit, Include: []string{"terraform/packer/**"}},
+		},
+	)
+	results := Evaluate(c, []string{"terraform/packer/README.md"}, nil, nil)
+	if results[0].Build {
+		t.Errorf("globally ignored file must not select an explicit target, got %v", results[0].Files)
+	}
+}
+
+// TestFailOpenUnchangedByExplicitNeighbour locks the no-regression
+// requirement: adding an explicit target to a config must not alter how any
+// other target is selected. One diff, every fail-open route — trigger_all,
+// orphan fallback, include and dep graph — still fires for the fail-open
+// targets while the explicit one stays unselected.
+func TestFailOpenUnchangedByExplicitNeighbour(t *testing.T) {
+	targets := map[string]config.Target{
+		"api": {Path: "./cmd/api"},
+		"web": {Include: []string{"web/**"}},
+	}
+	deps := map[string][]string{"api": {"cmd/api/main.go"}}
+	changed := []string{"go.mod", "native/App.swift", "web/src/App.tsx", "cmd/api/main.go"}
+
+	base := byTarget(Evaluate(mustCfg(t, config.Global{TriggerAll: []string{"go.mod"}}, "trigger_all", targets), changed, deps, nil))
+
+	withExplicit := make(map[string]config.Target, len(targets)+1)
+	for name, tgt := range targets {
+		withExplicit[name] = tgt
+	}
+	withExplicit["base-images"] = config.Target{Selection: config.SelectionExplicit, Include: []string{"terraform/packer/**"}}
+	got := byTarget(Evaluate(mustCfg(t, config.Global{TriggerAll: []string{"go.mod"}}, "trigger_all", withExplicit), changed, deps, nil))
+
+	for _, name := range []string{"api", "web"} {
+		if !got[name].Build {
+			t.Errorf("%s should still build", name)
+		}
+		if len(got[name].Files) != len(base[name].Files) {
+			t.Errorf("%s files changed: %v, want %v", name, got[name].Files, base[name].Files)
+		}
+		for i, fm := range got[name].Files {
+			if fm != base[name].Files[i] {
+				t.Errorf("%s file %d = %v, want %v", name, i, fm, base[name].Files[i])
+			}
+		}
+	}
+	if got["base-images"].Build {
+		t.Errorf("base-images must not build from this diff, got %v", got["base-images"].Files)
 	}
 }
 

@@ -111,7 +111,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	var paths []string
 	for _, target := range cfg.Targets {
-		if target.Lang == "go" && target.Path != "" {
+		if target.HasDepGraph() {
 			paths = append(paths, target.Path)
 		}
 	}
@@ -123,7 +123,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	deps := make(map[string][]string)
 	for name, target := range cfg.Targets {
-		if target.Lang == "go" {
+		if target.HasDepGraph() {
 			deps[name] = graphs[target.Path]
 		}
 	}

@@ -101,7 +101,10 @@ func orphanSet(cfg *config.Config, files []string, depSets map[string]map[string
 }
 
 // claimed reports whether any target accounts for f via global trigger_all, an
-// include pattern, or its dependency graph.
+// include pattern, or its dependency graph. An explicit target claims its
+// files exactly like a fail-open one: declaring the inputs of an expensive
+// target also tells the other targets those files are accounted for, so they
+// stop reaching the unknown_file fallback.
 func claimed(cfg *config.Config, includes map[string][]string, depSets map[string]map[string]struct{}, f string) bool {
 	if ok, _, _ := match.MatchAny(cfg.Global.TriggerAll, f); ok {
 		return true
@@ -148,6 +151,14 @@ func evaluateTarget(cfg *config.Config, name string, target config.Target, files
 			}
 		}
 
+		// Steps 5 and 6 are the repo-wide fallbacks: neither names this
+		// target's inputs, so an explicit target opts out of both. Everything
+		// above still applies — an explicit target is selected by its own
+		// include patterns and dependency graph, and by incoming triggers.
+		if target.Selection == config.SelectionExplicit {
+			continue
+		}
+
 		// Precedence step 5: global trigger_all.
 		if ok, rule, _ := match.MatchAny(cfg.Global.TriggerAll, f); ok {
 			r.Build = true
@@ -159,7 +170,7 @@ func evaluateTarget(cfg *config.Config, name string, target config.Target, files
 		// files no target accounts for — reach the fallback. A file owned by
 		// another target arrives here for the targets that don't reference it,
 		// but it is not an orphan, so it must not trigger them.
-		if _, isOrphan := orphan[f]; isOrphan && cfg.UnknownFile == "trigger_all" {
+		if _, isOrphan := orphan[f]; isOrphan && cfg.UnknownFile == config.UnknownFileTriggerAll {
 			r.Build = true
 			r.Files = append(r.Files, FileMatch{Path: f, Reason: "unknown-file"})
 		}
