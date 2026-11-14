@@ -22,6 +22,7 @@ package main
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -157,27 +158,27 @@ func goDeps(cfg *config.Config, repoRoot, baseRef string) (map[string][]string, 
 			platforms[goos] = append(platforms[goos], target.Path)
 		}
 	}
-	graphs := make(map[string]map[string][]string)
+	type loaded struct {
+		goos  string
+		graph map[string][]string
+		err   error
+	}
+	results := make(chan loaded)
 	for goos, paths := range platforms {
-		analyzer := depgraph.Go{}
-		if goos != "" {
-			analyzer.Env = []string{"GOOS=" + goos}
-		}
-		slices.Sort(paths)
-		paths = slices.Compact(paths)
-		head, err := analyzer.DepsAll(repoRoot, paths)
-		if err != nil {
-			return nil, fmt.Errorf("loading %s working tree: %w", cmp.Or(goos, "default GOOS"), err)
-		}
-		base, err := analyzer.DepsAt(repoRoot, baseRef, paths)
-		if err != nil {
-			return nil, fmt.Errorf("loading %s at %s: %w", cmp.Or(goos, "default GOOS"), baseRef, err)
-		}
-		graph := make(map[string][]string, len(paths))
-		for _, path := range paths {
-			graph[path] = slices.Concat(head[path], base[path])
-		}
-		graphs[goos] = graph
+		go func() {
+			graph, err := platformDeps(repoRoot, baseRef, goos, paths)
+			results <- loaded{goos, graph, err}
+		}()
+	}
+	graphs := make(map[string]map[string][]string, len(platforms))
+	var errs []error
+	for range platforms {
+		r := <-results
+		graphs[r.goos] = r.graph
+		errs = append(errs, r.err)
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
 	}
 	deps := make(map[string][]string)
 	for name, target := range cfg.Targets {
@@ -189,6 +190,30 @@ func goDeps(cfg *config.Config, repoRoot, baseRef string) (map[string][]string, 
 		}
 	}
 	return deps, nil
+}
+
+// platformDeps loads paths for one GOOS ("" for the analyzer's own) from the
+// working tree and from baseRef, and unions each path's two graphs.
+func platformDeps(repoRoot, baseRef, goos string, paths []string) (map[string][]string, error) {
+	analyzer := depgraph.Go{}
+	if goos != "" {
+		analyzer.Env = []string{"GOOS=" + goos}
+	}
+	slices.Sort(paths)
+	paths = slices.Compact(paths)
+	head, err := analyzer.DepsAll(repoRoot, paths)
+	if err != nil {
+		return nil, fmt.Errorf("loading %s working tree: %w", cmp.Or(goos, "default GOOS"), err)
+	}
+	base, err := analyzer.DepsAt(repoRoot, baseRef, paths)
+	if err != nil {
+		return nil, fmt.Errorf("loading %s at %s: %w", cmp.Or(goos, "default GOOS"), baseRef, err)
+	}
+	graph := make(map[string][]string, len(paths))
+	for _, path := range paths {
+		graph[path] = slices.Concat(head[path], base[path])
+	}
+	return graph, nil
 }
 
 // platformsOf returns the GOOS values whose graphs make up target's
