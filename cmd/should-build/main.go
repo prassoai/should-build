@@ -128,7 +128,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	results := eval.Evaluate(cfg, changed, deps, []string(targets))
+	results, err := eval.Evaluate(cfg, changed, deps, []string(targets))
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 2
+	}
 
 	// --explain is orthogonal to the output mode: it always writes to stderr.
 	if *explain {

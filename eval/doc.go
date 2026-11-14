@@ -2,7 +2,9 @@
 //
 // Evaluate is a pure function: it takes a parsed config, a list of changed
 // file paths, and precomputed dependency graphs, and returns a decision for
-// each target. It has no filesystem, git, or network dependencies.
+// each target, or an error with no decisions when unknown_file: error finds
+// unclassified inputs. Ownership is checked across all targets, regardless of
+// selection modes, exclusions, or the only parameter. It has no filesystem, git, or network dependencies.
 //
 // Evaluation precedence for each changed file against each target:
 //  1. global.ignore — file is invisible to all targets.

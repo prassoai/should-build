@@ -30,7 +30,7 @@ func TestGlobalIgnore(t *testing.T) {
 			"api": {Path: "./cmd/api"},
 		},
 	)
-	results := Evaluate(c, []string{"docs/design.txt", "README.md"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"docs/design.txt", "README.md"}, nil, nil)
 	if results[0].Build {
 		t.Error("globally ignored files should not trigger any target")
 	}
@@ -47,7 +47,7 @@ func TestTargetExclude(t *testing.T) {
 			"walker": {Path: "./cmd/walker", Exclude: []string{"go.mod", "go.sum"}},
 		},
 	)
-	results := Evaluate(c, []string{"go.mod"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"go.mod"}, nil, nil)
 	for _, r := range results {
 		switch r.Target {
 		case "api":
@@ -72,7 +72,7 @@ func TestTargetInclude(t *testing.T) {
 			"web": {Include: []string{"web/**"}},
 		},
 	)
-	results := Evaluate(c, []string{"k8s/api.yaml", "web/src/App.tsx"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"k8s/api.yaml", "web/src/App.tsx"}, nil, nil)
 	for _, r := range results {
 		if !r.Build {
 			t.Errorf("target %q should be triggered by include", r.Target)
@@ -95,7 +95,7 @@ func TestDepGraph(t *testing.T) {
 	deps := map[string][]string{
 		"api": {"cmd/api/main.go", "internal/config/load.go"},
 	}
-	results := Evaluate(c, []string{"internal/config/load.go"}, deps, nil)
+	results := mustEvaluate(t, c, []string{"internal/config/load.go"}, deps, nil)
 	if !results[0].Build {
 		t.Error("file in dep graph should trigger target")
 	}
@@ -117,7 +117,7 @@ func TestDepGraphNoMatch(t *testing.T) {
 	deps := map[string][]string{
 		"api": {"cmd/api/main.go"},
 	}
-	results := Evaluate(c, []string{"internal/unrelated/x.go"}, deps, nil)
+	results := mustEvaluate(t, c, []string{"internal/unrelated/x.go"}, deps, nil)
 	if results[0].Build {
 		t.Error("file outside dep graph should not trigger target (unknown_file=ignore)")
 	}
@@ -133,7 +133,7 @@ func TestGlobalTriggerAll(t *testing.T) {
 			"web": {Include: []string{"web/**"}},
 		},
 	)
-	results := Evaluate(c, []string{"Makefile"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"Makefile"}, nil, nil)
 	for _, r := range results {
 		if !r.Build {
 			t.Errorf("target %q should be triggered by trigger_all", r.Target)
@@ -155,7 +155,7 @@ func TestUnknownFileTriggerAll(t *testing.T) {
 			"web": {Include: []string{"web/**"}},
 		},
 	)
-	results := Evaluate(c, []string{"random/new_file.xyz"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"random/new_file.xyz"}, nil, nil)
 	for _, r := range results {
 		if !r.Build {
 			t.Errorf("target %q should be triggered by unknown file (trigger_all)", r.Target)
@@ -176,7 +176,7 @@ func TestUnknownFileIgnore(t *testing.T) {
 			"api": {Path: "./cmd/api"},
 		},
 	)
-	results := Evaluate(c, []string{"random/new_file.xyz"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"random/new_file.xyz"}, nil, nil)
 	if results[0].Build {
 		t.Error("unknown file should not trigger target when unknown_file=ignore")
 	}
@@ -205,7 +205,7 @@ func TestUnknownFileScopedToDependingTarget(t *testing.T) {
 		"api": {"cmd/api/main.go", "internal/server/handler.go"},
 		"ui":  {"cmd/ui/main.go", "gen/ui/status.go"},
 	}
-	results := Evaluate(c, []string{"internal/server/handler.go"}, deps, nil)
+	results := mustEvaluate(t, c, []string{"internal/server/handler.go"}, deps, nil)
 
 	idx := byTarget(results)
 	if !idx["api"].Build {
@@ -238,7 +238,7 @@ func TestUnknownFileOrphanStillTriggersAll(t *testing.T) {
 		"ui":  {"cmd/ui/main.go"},
 	}
 	// mystery.cfg is in nobody's import closure → genuine orphan.
-	results := Evaluate(c, []string{"mystery.cfg"}, deps, nil)
+	results := mustEvaluate(t, c, []string{"mystery.cfg"}, deps, nil)
 	for _, r := range results {
 		if !r.Build {
 			t.Errorf("target %q should build — orphan file triggers all", r.Target)
@@ -263,7 +263,7 @@ func TestExcludeBeatsInclude(t *testing.T) {
 			},
 		},
 	)
-	results := Evaluate(c, []string{"config/test/fixture.yaml"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"config/test/fixture.yaml"}, nil, nil)
 	if results[0].Build {
 		t.Error("exclude should take precedence over include")
 	}
@@ -279,7 +279,7 @@ func TestExcludeBeatsTriggerAll(t *testing.T) {
 			"walker": {Exclude: []string{"go.mod"}},
 		},
 	)
-	results := Evaluate(c, []string{"go.mod"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"go.mod"}, nil, nil)
 	if results[0].Build {
 		t.Error("target excluding go.mod should not be triggered by trigger_all")
 	}
@@ -294,7 +294,7 @@ func TestTargetTemplateExpansion(t *testing.T) {
 			"myservice": {Include: []string{"targets/{target}/conf/{target}-*.hjson"}},
 		},
 	)
-	results := Evaluate(c, []string{"targets/myservice/conf/myservice-prod.hjson"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"targets/myservice/conf/myservice-prod.hjson"}, nil, nil)
 	if !results[0].Build {
 		t.Error("{target} expansion in include should match")
 	}
@@ -309,7 +309,7 @@ func TestTargetTemplateInExclude(t *testing.T) {
 			"svc-a": {Exclude: []string{"targets/{target}/test/**"}},
 		},
 	)
-	results := Evaluate(c, []string{"targets/svc-a/test/data.json"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"targets/svc-a/test/data.json"}, nil, nil)
 	if results[0].Build {
 		t.Error("{target} expansion in exclude should prevent trigger")
 	}
@@ -324,7 +324,7 @@ func TestNoChangedFiles(t *testing.T) {
 			"api": {Path: "./cmd/api"},
 		},
 	)
-	results := Evaluate(c, nil, nil, nil)
+	results := mustEvaluate(t, c, nil, nil, nil)
 	if results[0].Build {
 		t.Error("no changed files should mean no rebuild")
 	}
@@ -340,7 +340,7 @@ func TestMultipleFilesTriggerSameTarget(t *testing.T) {
 			"api": {Include: []string{"k8s/**", "terraform/**"}},
 		},
 	)
-	results := Evaluate(c, []string{"k8s/api.yaml", "terraform/main.tf"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"k8s/api.yaml", "terraform/main.tf"}, nil, nil)
 	if !results[0].Build {
 		t.Error("multiple matching files should trigger target")
 	}
@@ -360,7 +360,7 @@ func TestSameFileTriggersDifferentTargets(t *testing.T) {
 			"web": {Include: []string{"shared/**"}},
 		},
 	)
-	results := Evaluate(c, []string{"shared/util.go"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"shared/util.go"}, nil, nil)
 	for _, r := range results {
 		if !r.Build {
 			t.Errorf("target %q should be triggered by shared file", r.Target)
@@ -382,7 +382,7 @@ func TestSQLOnlyTriggersSQLTarget(t *testing.T) {
 	deps := map[string][]string{
 		"api": {"cmd/api/main.go"},
 	}
-	results := Evaluate(c, []string{"db/migrations/001.sql"}, deps, nil)
+	results := mustEvaluate(t, c, []string{"db/migrations/001.sql"}, deps, nil)
 	for _, r := range results {
 		switch r.Target {
 		case "sql":
@@ -408,7 +408,7 @@ func TestDeterministicOrder(t *testing.T) {
 			"middle": {Include: []string{"m/**"}},
 		},
 	)
-	results := Evaluate(c, nil, nil, nil)
+	results := mustEvaluate(t, c, nil, nil, nil)
 	if results[0].Target != "alpha" || results[1].Target != "middle" || results[2].Target != "zebra" {
 		t.Errorf("results not sorted: %v, %v, %v", results[0].Target, results[1].Target, results[2].Target)
 	}
@@ -424,7 +424,7 @@ func TestEmptyFilesSlice(t *testing.T) {
 			"api": {Include: []string{"api/**"}},
 		},
 	)
-	results := Evaluate(c, []string{"unrelated.txt"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"unrelated.txt"}, nil, nil)
 	if results[0].Files == nil {
 		t.Error("Files should be [] not nil")
 	}
@@ -443,7 +443,7 @@ func TestIncludeBeatsDepGraph(t *testing.T) {
 	deps := map[string][]string{
 		"api": {"cmd/api/main.go"},
 	}
-	results := Evaluate(c, []string{"cmd/api/main.go"}, deps, nil)
+	results := mustEvaluate(t, c, []string{"cmd/api/main.go"}, deps, nil)
 	if !results[0].Build {
 		t.Fatal("should be triggered")
 	}
@@ -465,7 +465,7 @@ func TestGlobalIgnoreBeatsEverything(t *testing.T) {
 			"api": {Include: []string{"**/*.md"}}, // also matches; still ignored
 		},
 	)
-	results := Evaluate(c, []string{"docs/README.md"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"docs/README.md"}, nil, nil)
 	if results[0].Build {
 		t.Error("globally ignored file should not trigger any target")
 	}
@@ -482,7 +482,7 @@ func TestTriggerPropagation(t *testing.T) {
 			"vm":      {Include: []string{"cmd/vm/**"}},
 		},
 	)
-	results := Evaluate(c, []string{"cmd/control/main.go"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"cmd/control/main.go"}, nil, nil)
 	for _, r := range results {
 		switch r.Target {
 		case "control":
@@ -515,7 +515,7 @@ func TestTriggerTransitive(t *testing.T) {
 			"c": {Include: []string{"c/**"}},
 		},
 	)
-	results := Evaluate(c, []string{"a/x.go"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"a/x.go"}, nil, nil)
 	for _, r := range results {
 		if !r.Build {
 			t.Errorf("target %q should build (transitive trigger from a)", r.Target)
@@ -543,7 +543,7 @@ func TestTriggerNoOp(t *testing.T) {
 		},
 	)
 	// Change a file that doesn't match control's include.
-	results := Evaluate(c, []string{"unrelated/file.txt"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"unrelated/file.txt"}, nil, nil)
 	for _, r := range results {
 		if r.Build {
 			t.Errorf("target %q should not build — trigger source didn't build", r.Target)
@@ -562,7 +562,7 @@ func TestTriggerAlreadyBuilding(t *testing.T) {
 			"vm":      {Include: []string{"shared/**"}},
 		},
 	)
-	results := Evaluate(c, []string{"shared/lib.go"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"shared/lib.go"}, nil, nil)
 	for _, r := range results {
 		if !r.Build {
 			t.Errorf("target %q should build", r.Target)
@@ -593,7 +593,7 @@ func TestTriggerExpandsTargetFilter(t *testing.T) {
 		},
 	)
 	// Only evaluate "control" initially, but vm should be pulled in via trigger.
-	results := Evaluate(c, []string{"cmd/control/main.go"}, nil, []string{"control"})
+	results := mustEvaluate(t, c, []string{"cmd/control/main.go"}, nil, []string{"control"})
 
 	idx := byTarget(results)
 
@@ -625,7 +625,7 @@ func TestTriggerExpandsWithOwnRules(t *testing.T) {
 	)
 	// Both control and vm files changed, but only control is in --target.
 	// vm should be pulled in via trigger AND have its own include match.
-	results := Evaluate(c, []string{"cmd/control/main.go", "shared/lib.go"}, nil, []string{"control"})
+	results := mustEvaluate(t, c, []string{"cmd/control/main.go", "shared/lib.go"}, nil, []string{"control"})
 
 	idx := byTarget(results)
 
@@ -656,7 +656,7 @@ func TestTriggerMultipleSources(t *testing.T) {
 		},
 	)
 	// Both a and b build, both trigger c.
-	results := Evaluate(c, []string{"a/x.go", "b/y.go"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"a/x.go", "b/y.go"}, nil, nil)
 
 	idx := byTarget(results)
 
@@ -701,7 +701,7 @@ func TestExplicitSelectionIgnoresTriggerAll(t *testing.T) {
 			"base-images": {Selection: config.SelectionExplicit, Include: []string{"terraform/packer/**"}},
 		},
 	)
-	idx := byTarget(Evaluate(c, []string{"go.mod", ".github/workflows/deploy.yaml"}, nil, nil))
+	idx := byTarget(mustEvaluate(t, c, []string{"go.mod", ".github/workflows/deploy.yaml"}, nil, nil))
 
 	if !idx["api"].Build {
 		t.Error("api should build — fail-open targets still select on trigger_all")
@@ -726,7 +726,7 @@ func TestExplicitSelectionIgnoresUnknownFile(t *testing.T) {
 		},
 	)
 	deps := map[string][]string{"api": {"cmd/api/main.go"}}
-	idx := byTarget(Evaluate(c, []string{"native/App.swift"}, deps, nil))
+	idx := byTarget(mustEvaluate(t, c, []string{"native/App.swift"}, deps, nil))
 
 	if !idx["api"].Build {
 		t.Error("api should build — orphan files still trigger fail-open targets")
@@ -751,7 +751,7 @@ func TestExplicitSelectionInclude(t *testing.T) {
 			"base-images": {Selection: config.SelectionExplicit, Include: []string{"terraform/packer/**"}},
 		},
 	)
-	results := Evaluate(c, []string{"terraform/packer/gce.pkr.hcl"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"terraform/packer/gce.pkr.hcl"}, nil, nil)
 	if !results[0].Build {
 		t.Fatal("base-images should build — the changed file matches its include")
 	}
@@ -780,7 +780,7 @@ func TestExplicitSelectionExclude(t *testing.T) {
 			},
 		},
 	)
-	results := Evaluate(c, []string{"terraform/packer/tests/smoke_test.sh", "terraform/packer/README.md"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"terraform/packer/tests/smoke_test.sh", "terraform/packer/README.md"}, nil, nil)
 	if results[0].Build {
 		t.Errorf("excluded recipe files must not select base-images, got %v", results[0].Files)
 	}
@@ -799,7 +799,7 @@ func TestExplicitSelectionDepGraph(t *testing.T) {
 		},
 	)
 	deps := map[string][]string{"vm": {"cmd/vm/main.go", "internal/boot/boot.go"}}
-	results := Evaluate(c, []string{"internal/boot/boot.go"}, deps, nil)
+	results := mustEvaluate(t, c, []string{"internal/boot/boot.go"}, deps, nil)
 	if !results[0].Build {
 		t.Fatal("vm should build — the changed file is in its import closure")
 	}
@@ -821,7 +821,7 @@ func TestExplicitSelectionStillTriggered(t *testing.T) {
 			"base-images": {Selection: config.SelectionExplicit, Include: []string{"terraform/packer/**"}},
 		},
 	)
-	idx := byTarget(Evaluate(c, []string{"cmd/control/main.go"}, nil, nil))
+	idx := byTarget(mustEvaluate(t, c, []string{"cmd/control/main.go"}, nil, nil))
 	if !idx["base-images"].Build {
 		t.Fatal("base-images should build — control triggers it")
 	}
@@ -845,7 +845,7 @@ func TestExplicitSelectionClaimsItsFiles(t *testing.T) {
 		},
 	)
 	deps := map[string][]string{"api": {"cmd/api/main.go"}}
-	idx := byTarget(Evaluate(c, []string{"terraform/packer/gce.pkr.hcl"}, deps, nil))
+	idx := byTarget(mustEvaluate(t, c, []string{"terraform/packer/gce.pkr.hcl"}, deps, nil))
 
 	if !idx["base-images"].Build {
 		t.Error("base-images should build — the recipe changed")
@@ -867,7 +867,7 @@ func TestGlobalIgnoreAppliesToExplicitTarget(t *testing.T) {
 			"base-images": {Selection: config.SelectionExplicit, Include: []string{"terraform/packer/**"}},
 		},
 	)
-	results := Evaluate(c, []string{"terraform/packer/README.md"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"terraform/packer/README.md"}, nil, nil)
 	if results[0].Build {
 		t.Errorf("globally ignored file must not select an explicit target, got %v", results[0].Files)
 	}
@@ -886,14 +886,14 @@ func TestFailOpenUnchangedByExplicitNeighbour(t *testing.T) {
 	deps := map[string][]string{"api": {"cmd/api/main.go"}}
 	changed := []string{"go.mod", "native/App.swift", "web/src/App.tsx", "cmd/api/main.go"}
 
-	base := byTarget(Evaluate(mustCfg(t, config.Global{TriggerAll: []string{"go.mod"}}, "trigger_all", targets), changed, deps, nil))
+	base := byTarget(mustEvaluate(t, mustCfg(t, config.Global{TriggerAll: []string{"go.mod"}}, "trigger_all", targets), changed, deps, nil))
 
 	withExplicit := make(map[string]config.Target, len(targets)+1)
 	for name, tgt := range targets {
 		withExplicit[name] = tgt
 	}
 	withExplicit["base-images"] = config.Target{Selection: config.SelectionExplicit, Include: []string{"terraform/packer/**"}}
-	got := byTarget(Evaluate(mustCfg(t, config.Global{TriggerAll: []string{"go.mod"}}, "trigger_all", withExplicit), changed, deps, nil))
+	got := byTarget(mustEvaluate(t, mustCfg(t, config.Global{TriggerAll: []string{"go.mod"}}, "trigger_all", withExplicit), changed, deps, nil))
 
 	for _, name := range []string{"api", "web"} {
 		if !got[name].Build {
@@ -922,7 +922,7 @@ func TestRuleFieldPopulated(t *testing.T) {
 			"api": {Include: []string{"k8s/*.yaml"}},
 		},
 	)
-	results := Evaluate(c, []string{"k8s/api.yaml", "go.mod"}, nil, nil)
+	results := mustEvaluate(t, c, []string{"k8s/api.yaml", "go.mod"}, nil, nil)
 	if !results[0].Build {
 		t.Fatal("should be triggered")
 	}
@@ -936,6 +936,34 @@ func TestRuleFieldPopulated(t *testing.T) {
 			if fm.Rule != "go.mod" {
 				t.Errorf("trigger-all rule = %q, want %q", fm.Rule, "go.mod")
 			}
+		}
+	}
+}
+
+func mustEvaluate(t *testing.T, cfg *config.Config, changed []string, deps map[string][]string, only []string) []Result {
+	t.Helper()
+	results, err := Evaluate(cfg, changed, deps, only)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return results
+}
+
+// TestUnknownFileError enforces ownership across the whole configuration,
+// including explicit targets, excluded inputs, and a restricted target selection.
+func TestUnknownFileError(t *testing.T) {
+	cfg := mustCfg(t, config.Global{Ignore: []string{"docs/**"}, TriggerAll: []string{"shared"}},
+		"error", map[string]config.Target{
+			"api": {Lang: "none", Include: []string{"api/**"}, Exclude: []string{"excluded"}},
+			"web": {Lang: "none", Selection: "explicit", Include: []string{"web/**"}},
+		})
+	for _, only := range [][]string{nil, {"web"}} {
+		if _, err := Evaluate(cfg, []string{"docs/readme", "shared", "api/main", "web/main", "dependency"}, map[string][]string{"api": {"dependency"}}, only); err != nil {
+			t.Fatal(err)
+		}
+		results, err := Evaluate(cfg, []string{"z-orphan", "excluded", "a-orphan", "z-orphan"}, nil, only)
+		if err == nil || err.Error() != "classify changed files: unclassified inputs: a-orphan, excluded, z-orphan" || results != nil {
+			t.Fatalf("got %v, %v; want no selection and sorted unclassified inputs", results, err)
 		}
 	}
 }

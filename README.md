@@ -222,7 +222,7 @@ global:
     - "go.mod"
     - "go.sum"
 
-unknown_file: trigger_all  # or "ignore"
+unknown_file: error  # or "trigger_all" to rebuild all, "ignore" to skip
 
 targets:
   api:
@@ -236,6 +236,12 @@ targets:
     include:
       - "web/**"
 ```
+
+With `unknown_file: error`, any changed file with no declared owner fails
+classification (exit code 2), lists the unclassified paths, and emits no build
+selection. Globally ignored files are allowed. Ownership includes all targets'
+include patterns and dependency graphs, plus global trigger patterns.
+Target exclusions, explicit selection, and `--target` do not suppress this check.
 
 ### Selection modes
 

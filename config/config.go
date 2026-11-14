@@ -18,6 +18,8 @@ const (
 	UnknownFileTriggerAll = "trigger_all"
 	// UnknownFileIgnore skips changed files that match no rule.
 	UnknownFileIgnore = "ignore"
+	// UnknownFileError rejects changes containing files that match no rule.
+	UnknownFileError = "error"
 
 	// LangGo runs the Go dependency-graph analyzer rooted at Target.Path.
 	LangGo = "go"
@@ -98,10 +100,10 @@ func Canonicalize(cfg Config) (*Config, error) {
 	switch cfg.UnknownFile {
 	case "":
 		cfg.UnknownFile = UnknownFileTriggerAll
-	case UnknownFileTriggerAll, UnknownFileIgnore:
+	case UnknownFileTriggerAll, UnknownFileIgnore, UnknownFileError:
 		// valid
 	default:
-		return nil, fmt.Errorf("unknown_file: must be %q or %q, got %q", UnknownFileTriggerAll, UnknownFileIgnore, cfg.UnknownFile)
+		return nil, fmt.Errorf("unknown_file: must be %q, %q or %q, got %q", UnknownFileTriggerAll, UnknownFileIgnore, UnknownFileError, cfg.UnknownFile)
 	}
 
 	if len(cfg.Targets) == 0 {

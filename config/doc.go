@@ -48,6 +48,7 @@
 //
 // # Defaults applied by Canonicalize
 //
+// unknown_file: error rejects unclassified changed files before selection.
 // unknown_file defaults to "trigger_all" when the field is empty or absent.
 // This is the safe default: unrecognized files rebuild everything.
 //
