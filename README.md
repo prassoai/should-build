@@ -132,6 +132,20 @@ All Go targets share one `go list -json -deps` invocation. Each target retains
 its own transitive package closure, including embedded assets, even when target
 patterns overlap or multiple targets refer to the same package.
 
+The analyzer collects Go's package build-input lists: `GoFiles`, `CgoFiles`,
+`CFiles`, `CXXFiles`, `FFiles`, `MFiles`, `HFiles`, `SFiles`, `SysoFiles`,
+`SwigFiles`, `SwigCXXFiles`, and `EmbedFiles`. This covers cgo wrappers, native
+sources, package headers, assembly (also without cgo), system object files,
+and embedded assets returned by `go list`. It does not scan directories or
+follow arbitrary header includes. Ignored and test-only inputs are excluded.
+
+Run analysis with the same Go environment and build tags as the build,
+including `GOOS`, `GOARCH`, `CGO_ENABLED`, and tags supplied through `GOFLAGS`.
+The graph describes the current source tree: it does not recover ownership of
+deleted inputs or track files outside the repository, external headers and
+libraries, or other dependencies absent from those `go list` fields. Use
+include or trigger rules for additional repository inputs that need tracking.
+
 ### Outputs
 
 | Output | Description |

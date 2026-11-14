@@ -14,24 +14,31 @@ import (
 // Go implements Analyzer for Go source using "go list".
 type Go struct{}
 
-// goPackage is the subset of "go list -json" output we need. EmbedFiles holds
-// files pulled in by //go:embed directives (paths relative to Dir, like
-// GoFiles); without them a change to an embedded asset — e.g. a VERSION file
-// compiled into a binary — would be invisible to the dep graph and fall through
-// to the trigger_all / unknown_file fallback, rebuilding every target.
+// goPackage holds the package graph and build inputs from "go list -json".
+// File lists are relative to Dir and follow Go's build-input hashing contract
+// in cmd/go/internal/work/exec.go, including native sources and embedded assets.
 type goPackage struct {
-	ImportPath string   `json:"ImportPath"`
-	Match      []string `json:"Match"`
-	Deps       []string `json:"Deps"`
-	Dir        string   `json:"Dir"`
-	GoFiles    []string `json:"GoFiles"`
-	EmbedFiles []string `json:"EmbedFiles"`
-	Standard   bool     `json:"Standard"`
+	ImportPath   string   `json:"ImportPath"`
+	Match        []string `json:"Match"`
+	Deps         []string `json:"Deps"`
+	Dir          string   `json:"Dir"`
+	GoFiles      []string `json:"GoFiles"`
+	CgoFiles     []string `json:"CgoFiles"`
+	CFiles       []string `json:"CFiles"`
+	CXXFiles     []string `json:"CXXFiles"`
+	FFiles       []string `json:"FFiles"`
+	MFiles       []string `json:"MFiles"`
+	HFiles       []string `json:"HFiles"`
+	SFiles       []string `json:"SFiles"`
+	SysoFiles    []string `json:"SysoFiles"`
+	SwigFiles    []string `json:"SwigFiles"`
+	SwigCXXFiles []string `json:"SwigCXXFiles"`
+	EmbedFiles   []string `json:"EmbedFiles"`
+	Standard     bool     `json:"Standard"`
 }
 
-// Deps returns all Go source files and //go:embed assets transitively imported
-// by importPath, filtered to those under repoRoot. Standard library files are
-// excluded.
+// Deps returns the build inputs and //go:embed assets transitively imported by
+// importPath, filtered to those under repoRoot. Standard library files are excluded.
 func (Go) Deps(repoRoot, importPath string) ([]string, error) {
 	deps, err := (Go{}).DepsAll(repoRoot, []string{importPath})
 	if err != nil {
@@ -84,12 +91,18 @@ func (Go) DepsAll(repoRoot string, importPaths []string) (map[string][]string, e
 			if pkg.Standard || pkg.Dir == "" {
 				continue
 			}
-			for _, file := range append(pkg.GoFiles, pkg.EmbedFiles...) {
-				rel, err := filepath.Rel(absRoot, filepath.Join(pkg.Dir, file))
-				if err != nil || outsideRoot(rel) {
-					continue
+			for _, list := range [][]string{
+				pkg.GoFiles, pkg.CgoFiles, pkg.CFiles, pkg.CXXFiles, pkg.FFiles,
+				pkg.MFiles, pkg.HFiles, pkg.SFiles, pkg.SysoFiles,
+				pkg.SwigFiles, pkg.SwigCXXFiles, pkg.EmbedFiles,
+			} {
+				for _, file := range list {
+					rel, err := filepath.Rel(absRoot, filepath.Join(pkg.Dir, file))
+					if err != nil || outsideRoot(rel) {
+						continue
+					}
+					files = append(files, filepath.ToSlash(rel))
 				}
-				files = append(files, filepath.ToSlash(rel))
 			}
 		}
 		for _, pattern := range root.Match {
