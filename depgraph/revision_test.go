@@ -92,3 +92,64 @@ func TestGoDepsAtUnknownRevision(t *testing.T) {
 		t.Fatalf("want an error naming the revision, got %v", err)
 	}
 }
+
+// TestGoDepsAtIgnoredWorkspace requires the base graph to resolve sibling
+// modules through a go.work the repository ignores. The checkout holds only
+// tracked files; without the workspace, a deleted file in a sibling module
+// would not be attributed to its former consumers.
+func TestGoDepsAtIgnoredWorkspace(t *testing.T) {
+	root := t.TempDir()
+	git(t, root, "init")
+	git(t, root, "config", "user.email", "test@test.com")
+	git(t, root, "config", "user.name", "Test")
+	writeFile(t, filepath.Join(root, ".gitignore"), "go.work\ngo.work.sum\n")
+	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/test\n\ngo 1.23\n")
+	writeFile(t, filepath.Join(root, "cmd/app/main.go"), "package main\nimport _ \"example.com/lib\"\nfunc main() {}\n")
+	writeFile(t, filepath.Join(root, "lib/go.mod"), "module example.com/lib\n\ngo 1.23\n")
+	writeFile(t, filepath.Join(root, "lib/foo.go"), "package lib\n")
+	writeFile(t, filepath.Join(root, "lib/bar.go"), "package lib\n")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "base")
+	base := git(t, root, "rev-parse", "HEAD")
+	git(t, root, "rm", "-q", "lib/foo.go")
+	git(t, root, "commit", "-m", "head")
+	writeFile(t, filepath.Join(root, "go.work"), "go 1.23\n\nuse (\n\t.\n\t./lib\n)\n")
+
+	graphs, err := (Go{}).DepsAt(root, base, []string{"./cmd/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"cmd/app/main.go", "lib/bar.go", "lib/foo.go"}; !slices.Equal(graphs["./cmd/app"], want) {
+		t.Fatalf("base graph = %v, want %v", graphs["./cmd/app"], want)
+	}
+}
+
+// TestGoDepsAtExplicitWorkspace requires a GOWORK pointing into the working
+// tree to be mapped onto the checkout. Inheriting it unchanged would load the
+// working tree's modules, where the deleted file no longer exists.
+func TestGoDepsAtExplicitWorkspace(t *testing.T) {
+	root := t.TempDir()
+	git(t, root, "init")
+	git(t, root, "config", "user.email", "test@test.com")
+	git(t, root, "config", "user.name", "Test")
+	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/test\n\ngo 1.23\n")
+	writeFile(t, filepath.Join(root, "cmd/app/main.go"), "package main\nimport _ \"example.com/lib\"\nfunc main() {}\n")
+	writeFile(t, filepath.Join(root, "lib/go.mod"), "module example.com/lib\n\ngo 1.23\n")
+	writeFile(t, filepath.Join(root, "lib/foo.go"), "package lib\n")
+	writeFile(t, filepath.Join(root, "lib/bar.go"), "package lib\n")
+	writeFile(t, filepath.Join(root, "work/dev.work"), "go 1.23\n\nuse (\n\t..\n\t../lib\n)\n")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "base")
+	base := git(t, root, "rev-parse", "HEAD")
+	git(t, root, "rm", "-q", "lib/foo.go")
+	git(t, root, "commit", "-m", "head")
+	t.Setenv("GOWORK", filepath.Join(root, "work/dev.work"))
+
+	graphs, err := (Go{}).DepsAt(root, base, []string{"./cmd/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"cmd/app/main.go", "lib/bar.go", "lib/foo.go"}; !slices.Equal(graphs["./cmd/app"], want) {
+		t.Fatalf("base graph = %v, want %v", graphs["./cmd/app"], want)
+	}
+}

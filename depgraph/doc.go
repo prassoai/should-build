@@ -13,7 +13,9 @@
 // caller unions both graphs: the working tree attributes added and modified
 // files, the earlier revision attributes deleted ones. Loading at a revision
 // is best effort (go list -e), since a target added by the change has no
-// earlier graph to find.
+// earlier graph to find. The checkout keeps the working tree's Go workspace:
+// a go.work inside the repository, tracked or not, is mapped to the same path
+// in the checkout, and one outside the repository is turned off.
 //
 // Files outside the repo root (standard library packages, vendored modules
 // fetched to GOMODCACHE, replace-directive targets above the repo) are
