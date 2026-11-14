@@ -116,15 +116,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	slices.Sort(paths)
-	graphs, err := (depgraph.Go{}).DepsAll(*repoPath, slices.Compact(paths))
+	paths = slices.Compact(paths)
+	// The head graph sees added and modified files; only the base graph still
+	// knows which targets used a file that the change deletes.
+	head, err := (depgraph.Go{}).DepsAll(*repoPath, paths)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: dep graphs: %v\n", err)
+		return 2
+	}
+	base, err := (depgraph.Go{}).DepsAt(*repoPath, baseRef, paths)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: base dep graphs: %v\n", err)
 		return 2
 	}
 	deps := make(map[string][]string)
 	for name, target := range cfg.Targets {
 		if target.HasDepGraph() {
-			deps[name] = graphs[target.Path]
+			deps[name] = slices.Concat(head[target.Path], base[target.Path])
 		}
 	}
 

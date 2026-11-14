@@ -132,6 +132,13 @@ All Go targets share one `go list -json -deps` invocation. Each target retains
 its own transitive package closure, including embedded assets, even when target
 patterns overlap or multiple targets refer to the same package.
 
+A target's Go dependencies are the union of two graphs: one loaded from the
+checkout, which should be the head, and one loaded from the base commit, which
+`should-build` checks out into a temporary directory. The base graph is what
+attributes a deleted file to the targets that imported it, so a deletion needs
+no hand-maintained directory pattern. It is best effort: a target that does not
+exist at the base contributes nothing there.
+
 ### Outputs
 
 | Output | Description |

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -664,5 +665,50 @@ func TestRunUnclassifiedFailsWithoutOutput(t *testing.T) {
 				t.Fatalf("stdout=%q stderr=%q", &stdout, &stderr)
 			}
 		})
+	}
+}
+
+// TestRunDeletedGoFileSelectsFormerConsumer requires deleting a Go file to
+// select exactly the targets that imported it. The deleted file is absent from
+// the head checkout, so only the base revision's graph can attribute it;
+// without that it is unclassified and unknown_file: error rejects the change.
+func TestRunDeletedGoFileSelectsFormerConsumer(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init")
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+	gitRun(t, dir, "config", "user.name", "Test")
+	writeFile(t, filepath.Join(dir, "should-build.yaml"), `
+unknown_file: error
+targets:
+  api:
+    path: ./cmd/api
+  worker:
+    path: ./cmd/worker
+`)
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/test\n\ngo 1.23\n")
+	writeFile(t, filepath.Join(dir, "cmd/api/main.go"), "package main\nimport _ \"example.com/test/lib\"\nfunc main() {}\n")
+	writeFile(t, filepath.Join(dir, "cmd/worker/main.go"), "package main\nfunc main() {}\n")
+	writeFile(t, filepath.Join(dir, "lib/foo.go"), "package lib\n")
+	writeFile(t, filepath.Join(dir, "lib/bar.go"), "package lib\n")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "base")
+	base := gitSHA(t, dir, "HEAD")
+	gitRun(t, dir, "rm", "-q", "lib/foo.go")
+	gitRun(t, dir, "commit", "-m", "head")
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--json", "--repo", dir, base, gitSHA(t, dir, "HEAD")}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	var results []eval.Result
+	if err := json.Unmarshal(stdout.Bytes(), &results); err != nil {
+		t.Fatal(err)
+	}
+	want := []eval.Result{
+		{Target: "api", Build: true, Files: []eval.FileMatch{{Path: "lib/foo.go", Reason: "go-dep"}}},
+		{Target: "worker", Files: []eval.FileMatch{}},
+	}
+	if !reflect.DeepEqual(results, want) {
+		t.Fatalf("got %+v, want %+v", results, want)
 	}
 }

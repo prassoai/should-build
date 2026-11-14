@@ -23,8 +23,7 @@ func TestGoDepsDirect(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/test\n\ngo 1.23\n")
 	writeFile(t, filepath.Join(dir, "cmd", "app", "main.go"), "package main\n\nfunc main() {}\n")
 
-	a := Go{}
-	deps, err := a.Deps(dir, "./cmd/app")
+	deps, err := depsOf(dir, "./cmd/app")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,8 +41,7 @@ func TestGoDepsTransitive(t *testing.T) {
 		"package main\n\nimport _ \"example.com/test/internal/lib\"\n\nfunc main() {}\n")
 	writeFile(t, filepath.Join(dir, "internal", "lib", "lib.go"), "package lib\n")
 
-	a := Go{}
-	deps, err := a.Deps(dir, "./cmd/app")
+	deps, err := depsOf(dir, "./cmd/app")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,8 +64,7 @@ func TestGoDepsIncludesEmbeds(t *testing.T) {
 		"package main\n\nimport (\n\t_ \"embed\"\n)\n\n//go:embed version.txt\nvar version string\n\nfunc main() { _ = version }\n")
 	writeFile(t, filepath.Join(dir, "cmd", "app", "version.txt"), "1.2\n")
 
-	a := Go{}
-	deps, err := a.Deps(dir, "./cmd/app")
+	deps, err := depsOf(dir, "./cmd/app")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,8 +80,7 @@ func TestGoDepsExcludesStdlib(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/test\n\ngo 1.23\n")
 	writeFile(t, filepath.Join(dir, "main.go"), "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println() }\n")
 
-	a := Go{}
-	deps, err := a.Deps(dir, ".")
+	deps, err := depsOf(dir, ".")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,11 +97,16 @@ func TestGoDepsInvalidPath(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/test\n\ngo 1.23\n")
 
-	a := Go{}
-	_, err := a.Deps(dir, "./nonexistent")
+	_, err := depsOf(dir, "./nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent import path")
 	}
+}
+
+// depsOf loads one pattern from the working tree at dir.
+func depsOf(dir, pattern string) ([]string, error) {
+	graphs, err := (Go{}).DepsAll(dir, []string{pattern})
+	return graphs[pattern], err
 }
 
 func stringsEqual(a, b []string) bool {

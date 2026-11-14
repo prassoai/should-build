@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -11,7 +12,7 @@ import (
 	"strings"
 )
 
-// Go implements Analyzer for Go source using "go list".
+// Go analyzes Go source using "go list".
 type Go struct{}
 
 // goPackage is the subset of "go list -json" output we need. EmbedFiles holds
@@ -29,19 +30,57 @@ type goPackage struct {
 	Standard   bool     `json:"Standard"`
 }
 
-// Deps returns all Go source files and //go:embed assets transitively imported
-// by importPath, filtered to those under repoRoot. Standard library files are
-// excluded.
-func (Go) Deps(repoRoot, importPath string) ([]string, error) {
-	deps, err := (Go{}).DepsAll(repoRoot, []string{importPath})
-	if err != nil {
-		return nil, fmt.Errorf("loading dependencies for %s: %w", importPath, err)
-	}
-	return deps[importPath], nil
+// DepsAll loads the working tree at repoRoot once and returns each input
+// pattern's transitive files. Any pattern or package that fails to load fails
+// the whole call.
+func (Go) DepsAll(repoRoot string, importPaths []string) (map[string][]string, error) {
+	return load(repoRoot, importPaths, false)
 }
 
-// DepsAll loads packages once and returns each input pattern's transitive files.
-func (Go) DepsAll(repoRoot string, importPaths []string) (map[string][]string, error) {
+// DepsAt returns each input pattern's transitive files as of revision rev,
+// read from the repository at repoRoot without touching its index, working
+// tree or worktree list.
+//
+// The result is best effort: packages that fail to load at rev, including a
+// pattern that does not exist there yet, contribute only what go list could
+// resolve. It describes the files a target used to depend on, so a deleted
+// file still selects its former consumers.
+func (Go) DepsAt(repoRoot, rev string, importPaths []string) (map[string][]string, error) {
+	if len(importPaths) == 0 {
+		return map[string][]string{}, nil
+	}
+	work, err := os.MkdirTemp("", "should-build-")
+	if err != nil {
+		return nil, fmt.Errorf("creating checkout directory for %s: %w", rev, err)
+	}
+	defer os.RemoveAll(work)
+	tree := filepath.Join(work, "tree")
+	if err := checkout(repoRoot, rev, filepath.Join(work, "index"), tree); err != nil {
+		return nil, fmt.Errorf("checking out %s: %w", rev, err)
+	}
+	return load(tree, importPaths, true)
+}
+
+// checkout writes rev's tree to dir through a private index file, so the
+// repository's own index and working tree are left alone.
+func checkout(repoRoot, rev, index, dir string) error {
+	for _, args := range [][]string{
+		{"read-tree", rev},
+		{"checkout-index", "--all", "--prefix=" + dir + string(filepath.Separator)},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoRoot
+		cmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+index)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
+}
+
+// load runs one go list over importPaths in repoRoot. With tolerant set, go
+// list reports broken packages instead of failing (-e).
+func load(repoRoot string, importPaths []string, tolerant bool) (map[string][]string, error) {
 	results := make(map[string][]string, len(importPaths))
 	if len(importPaths) == 0 {
 		return results, nil
@@ -51,7 +90,11 @@ func (Go) DepsAll(repoRoot string, importPaths []string) (map[string][]string, e
 		return nil, fmt.Errorf("resolving repo root: %w", err)
 	}
 
-	cmd := exec.Command("go", append([]string{"list", "-json", "-deps"}, importPaths...)...)
+	args := []string{"list", "-json", "-deps"}
+	if tolerant {
+		args = append(args, "-e")
+	}
+	cmd := exec.Command("go", append(args, importPaths...)...)
 	cmd.Dir = absRoot
 	out, err := cmd.Output()
 	if err != nil {
