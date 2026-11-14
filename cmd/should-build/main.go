@@ -20,6 +20,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -109,31 +110,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	var paths []string
-	for _, target := range cfg.Targets {
-		if target.HasDepGraph() {
-			paths = append(paths, target.Path)
-		}
-	}
-	slices.Sort(paths)
-	paths = slices.Compact(paths)
-	// The head graph sees added and modified files; only the base graph still
-	// knows which targets used a file that the change deletes.
-	head, err := (depgraph.Go{}).DepsAll(*repoPath, paths)
+	deps, err := goDeps(cfg, *repoPath, baseRef)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: dep graphs: %v\n", err)
 		return 2
-	}
-	base, err := (depgraph.Go{}).DepsAt(*repoPath, baseRef, paths)
-	if err != nil {
-		fmt.Fprintf(stderr, "error: base dep graphs: %v\n", err)
-		return 2
-	}
-	deps := make(map[string][]string)
-	for name, target := range cfg.Targets {
-		if target.HasDepGraph() {
-			deps[name] = slices.Concat(head[target.Path], base[target.Path])
-		}
 	}
 
 	results, err := eval.Evaluate(cfg, changed, deps, []string(targets))
@@ -160,6 +140,64 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return writeJSON(stdout, stderr, results, *verbose)
 	}
 	return writeTable(stdout, stderr, results, *verbose)
+}
+
+// goDeps returns each Go target's dependency files: the union, over the
+// target's GOOS list, of the working tree's graph and baseRef's graph. The
+// working tree sees added and modified files; only the base still knows which
+// targets used a file the change deletes. Targets sharing a GOOS share one
+// load of each revision.
+func goDeps(cfg *config.Config, repoRoot, baseRef string) (map[string][]string, error) {
+	platforms := make(map[string][]string)
+	for _, target := range cfg.Targets {
+		if !target.HasDepGraph() {
+			continue
+		}
+		for _, goos := range platformsOf(target) {
+			platforms[goos] = append(platforms[goos], target.Path)
+		}
+	}
+	graphs := make(map[string]map[string][]string)
+	for goos, paths := range platforms {
+		analyzer := depgraph.Go{}
+		if goos != "" {
+			analyzer.Env = []string{"GOOS=" + goos}
+		}
+		slices.Sort(paths)
+		paths = slices.Compact(paths)
+		head, err := analyzer.DepsAll(repoRoot, paths)
+		if err != nil {
+			return nil, fmt.Errorf("loading %s working tree: %w", cmp.Or(goos, "default GOOS"), err)
+		}
+		base, err := analyzer.DepsAt(repoRoot, baseRef, paths)
+		if err != nil {
+			return nil, fmt.Errorf("loading %s at %s: %w", cmp.Or(goos, "default GOOS"), baseRef, err)
+		}
+		graph := make(map[string][]string, len(paths))
+		for _, path := range paths {
+			graph[path] = slices.Concat(head[path], base[path])
+		}
+		graphs[goos] = graph
+	}
+	deps := make(map[string][]string)
+	for name, target := range cfg.Targets {
+		if !target.HasDepGraph() {
+			continue
+		}
+		for _, goos := range platformsOf(target) {
+			deps[name] = append(deps[name], graphs[goos][target.Path]...)
+		}
+	}
+	return deps, nil
+}
+
+// platformsOf returns the GOOS values whose graphs make up target's
+// dependencies; "" is the analyzer's own GOOS.
+func platformsOf(target config.Target) []string {
+	if len(target.GOOS) == 0 {
+		return []string{""}
+	}
+	return target.GOOS
 }
 
 func writeJSON(stdout, stderr io.Writer, results []eval.Result, verbose bool) int {

@@ -139,6 +139,20 @@ attributes a deleted file to the targets that imported it, so a deletion needs
 no hand-maintained directory pattern. It is best effort: a target that does not
 exist at the base contributes nothing there.
 
+Both graphs are computed for the Go toolchain's own `GOOS`, so a file behind a
+build constraint for another system, such as `prompt_darwin.go` on a Linux
+runner, is in neither. A target built for several systems lists them, and its
+graph becomes the union of one graph per entry:
+
+```yaml
+targets:
+  cli:
+    path: ./cmd/cli
+    goos: [linux, darwin]
+```
+
+Targets sharing a `GOOS` share one `go list` per revision.
+
 ### Outputs
 
 | Output | Description |

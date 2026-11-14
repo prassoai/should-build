@@ -14,8 +14,11 @@ import (
 	"strings"
 )
 
-// Go analyzes Go source using "go list".
-type Go struct{}
+// Go analyzes Go source using "go list". Env is added to the go command's
+// environment, for example GOOS=darwin to load another platform's files.
+type Go struct {
+	Env []string
+}
 
 // goPackage is the subset of "go list -json" output we need. EmbedFiles holds
 // files pulled in by //go:embed directives (paths relative to Dir, like
@@ -35,8 +38,8 @@ type goPackage struct {
 // DepsAll loads the working tree at repoRoot once and returns each input
 // pattern's transitive files. Any pattern or package that fails to load fails
 // the whole call.
-func (Go) DepsAll(repoRoot string, importPaths []string) (map[string][]string, error) {
-	return load(repoRoot, importPaths, false)
+func (g Go) DepsAll(repoRoot string, importPaths []string) (map[string][]string, error) {
+	return load(repoRoot, importPaths, false, g.Env...)
 }
 
 // DepsAt returns each input pattern's transitive files as of revision rev,
@@ -47,7 +50,7 @@ func (Go) DepsAll(repoRoot string, importPaths []string) (map[string][]string, e
 // pattern that does not exist there yet, contribute only what go list could
 // resolve. It describes the files a target used to depend on, so a deleted
 // file still selects its former consumers.
-func (Go) DepsAt(repoRoot, rev string, importPaths []string) (map[string][]string, error) {
+func (g Go) DepsAt(repoRoot, rev string, importPaths []string) (map[string][]string, error) {
 	if len(importPaths) == 0 {
 		return map[string][]string{}, nil
 	}
@@ -64,7 +67,7 @@ func (Go) DepsAt(repoRoot, rev string, importPaths []string) (map[string][]strin
 	if err != nil {
 		return nil, fmt.Errorf("mapping go workspace into %s: %w", rev, err)
 	}
-	return load(tree, importPaths, true, "GOWORK="+gowork)
+	return load(tree, importPaths, true, append(slices.Clone(g.Env), "GOWORK="+gowork)...)
 }
 
 // workspace returns the GOWORK value that gives the checkout at tree the same

@@ -17,6 +17,9 @@
 // a go.work inside the repository, tracked or not, is mapped to the same path
 // in the checkout, and one outside the repository is turned off.
 //
+// Go.Env adds variables to the go command's environment; GOOS=darwin loads the
+// files a darwin build compiles instead of the host's.
+//
 // Files outside the repo root (standard library packages, vendored modules
 // fetched to GOMODCACHE, replace-directive targets above the repo) are
 // silently excluded from the returned set. This is intentional: such files

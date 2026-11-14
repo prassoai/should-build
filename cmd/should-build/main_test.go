@@ -712,3 +712,56 @@ targets:
 		t.Fatalf("got %+v, want %+v", results, want)
 	}
 }
+
+// TestRunGOOSSelectsPlatformFiles requires a target declaring goos to be
+// selected by a file compiled only for one of those systems, whether the
+// change edits or deletes it, while a target built only for the analyzer's
+// own system is not. Without per-platform graphs, foo_darwin.go is in no
+// graph on Linux and unknown_file: error rejects the change.
+func TestRunGOOSSelectsPlatformFiles(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init")
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+	gitRun(t, dir, "config", "user.name", "Test")
+	writeFile(t, filepath.Join(dir, "should-build.yaml"), `
+unknown_file: error
+targets:
+  cli:
+    path: ./cmd/cli
+    goos: [linux, darwin]
+  server:
+    path: ./cmd/server
+`)
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/test\n\ngo 1.23\n")
+	writeFile(t, filepath.Join(dir, "cmd/cli/main.go"), "package main\nimport _ \"example.com/test/lib\"\nfunc main() {}\n")
+	writeFile(t, filepath.Join(dir, "cmd/server/main.go"), "package main\nimport _ \"example.com/test/lib\"\nfunc main() {}\n")
+	writeFile(t, filepath.Join(dir, "lib/lib.go"), "package lib\n")
+	writeFile(t, filepath.Join(dir, "lib/prompt_darwin.go"), "package lib\n")
+	writeFile(t, filepath.Join(dir, "lib/prompt_windows.go"), "package lib\n")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "base")
+	base := gitSHA(t, dir, "HEAD")
+	writeFile(t, filepath.Join(dir, "lib/prompt_darwin.go"), "package lib\nconst Changed = true\n")
+	gitRun(t, dir, "commit", "-qam", "edit")
+	edited := gitSHA(t, dir, "HEAD")
+	gitRun(t, dir, "rm", "-q", "lib/prompt_darwin.go")
+	gitRun(t, dir, "commit", "-qm", "delete")
+
+	for _, head := range []string{edited, gitSHA(t, dir, "HEAD")} {
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"--json", "--repo", dir, base, head}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		var results []eval.Result
+		if err := json.Unmarshal(stdout.Bytes(), &results); err != nil {
+			t.Fatal(err)
+		}
+		want := []eval.Result{
+			{Target: "cli", Build: true, Files: []eval.FileMatch{{Path: "lib/prompt_darwin.go", Reason: "go-dep"}}},
+			{Target: "server", Files: []eval.FileMatch{}},
+		}
+		if !reflect.DeepEqual(results, want) {
+			t.Fatalf("%s: got %+v, want %+v", head, results, want)
+		}
+	}
+}

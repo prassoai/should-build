@@ -55,9 +55,15 @@ type Global struct {
 // repo-wide rules (global.trigger_all, the unknown_file fallback) may select
 // this target. global.ignore, exclude, include, the dependency graph and
 // incoming triggers behave identically in both modes.
+//
+// GOOS lists the operating systems the target is built for. Its dependency
+// graph is the union of one graph per entry, so a file compiled only for one
+// of them, such as foo_darwin.go, still selects the target. Empty means the
+// single graph of the analyzer's own GOOS.
 type Target struct {
 	Path      string   `yaml:"path"`
 	Lang      string   `yaml:"lang"`
+	GOOS      []string `yaml:"goos"`
 	Selection string   `yaml:"selection"`
 	Include   []string `yaml:"include"`
 	Exclude   []string `yaml:"exclude"`
@@ -150,6 +156,15 @@ func canonicalizeTarget(name string, t Target) (Target, error) {
 			t.Lang = LangGo
 		} else {
 			t.Lang = LangNone
+		}
+	}
+
+	if len(t.GOOS) > 0 && !t.HasDepGraph() {
+		return Target{}, fmt.Errorf("target %q: goos needs a %s path", name, LangGo)
+	}
+	for i, goos := range t.GOOS {
+		if goos == "" || slices.Contains(t.GOOS[:i], goos) {
+			return Target{}, fmt.Errorf("target %q: goos entries must be distinct and non-empty, got %q", name, t.GOOS)
 		}
 	}
 

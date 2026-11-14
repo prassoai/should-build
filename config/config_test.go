@@ -493,3 +493,26 @@ func TestParseEmptyConfig(t *testing.T) {
 		t.Fatal("expected error for empty config")
 	}
 }
+
+// TestParseGOOS requires goos to be kept as written on a Go target, and
+// rejected where it cannot mean anything: on a target with no Go graph, or
+// with an empty or repeated entry that would silently load the wrong set of
+// platforms.
+func TestParseGOOS(t *testing.T) {
+	cfg, err := Parse([]byte("targets:\n  cli:\n    path: ./cmd/cli\n    goos: [linux, darwin]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Targets["cli"].GOOS; len(got) != 2 || got[0] != "linux" || got[1] != "darwin" {
+		t.Fatalf("GOOS = %q, want [linux darwin]", got)
+	}
+	for _, target := range []string{
+		"lang: none\n    include: [\"web/**\"]\n    goos: [linux]",
+		"path: ./cmd/cli\n    goos: [linux, linux]",
+		"path: ./cmd/cli\n    goos: [\"\"]",
+	} {
+		if _, err := Parse([]byte("targets:\n  cli:\n    " + target + "\n")); err == nil || !strings.Contains(err.Error(), "goos") {
+			t.Errorf("%s: want a goos error, got %v", target, err)
+		}
+	}
+}

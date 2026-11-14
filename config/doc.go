@@ -34,6 +34,15 @@
 // builds, Canonicalize rejects an explicit target that nothing can select:
 // no include patterns, no Go dependency graph, and no incoming trigger.
 //
+// # Target platforms
+//
+// A Go target's dependency graph is computed for the analyzer's own GOOS, so a
+// file behind a build constraint for another system is invisible to it. A
+// target built for several systems lists them in goos, and its graph becomes
+// the union of one graph per entry: a CLI shipped for linux and darwin is
+// selected by a change to foo_darwin.go. goos is rejected on a target without a
+// Go path, and its entries must be distinct.
+//
 // # Target triggers
 //
 // A target may declare a triggers list naming other targets that must also
