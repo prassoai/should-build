@@ -63,7 +63,7 @@ func (g Go) DepsAt(repoRoot, rev string, importPaths []string) (map[string][]str
 	if err := checkout(repoRoot, rev, filepath.Join(work, "index"), tree); err != nil {
 		return nil, fmt.Errorf("checking out %s: %w", rev, err)
 	}
-	gowork, err := workspace(repoRoot, tree)
+	gowork, err := workspace(repoRoot, tree, g.Env)
 	if err != nil {
 		return nil, fmt.Errorf("mapping go workspace into %s: %w", rev, err)
 	}
@@ -71,15 +71,16 @@ func (g Go) DepsAt(repoRoot, rev string, importPaths []string) (map[string][]str
 }
 
 // workspace returns the GOWORK value that gives the checkout at tree the same
-// workspace the working tree at repoRoot uses. A go.work inside the repository
+// workspace the working tree at repoRoot uses under env. A go.work inside the repository
 // maps to the same path in tree, copied there with its go.work.sum when the
 // revision does not track it, so an ignored workspace file still joins the
 // sibling modules. Inheriting GOWORK unchanged would instead load the working
 // tree's modules. A workspace outside the repository cannot list the checkout,
 // so it is turned off.
-func workspace(repoRoot, tree string) (string, error) {
+func workspace(repoRoot, tree string, env []string) (string, error) {
 	cmd := exec.Command("go", "env", "GOWORK")
 	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), env...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("go env GOWORK: %w", err)

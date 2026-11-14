@@ -153,3 +153,29 @@ func TestGoDepsAtExplicitWorkspace(t *testing.T) {
 		t.Fatalf("base graph = %v, want %v", graphs["./cmd/app"], want)
 	}
 }
+
+// TestGoDepsAtAnalyzerWorkspace requires the analyzer's own GOWORK to decide
+// the base checkout's workspace, as it does for the working tree. Otherwise
+// Env: GOWORK=off would load the base through the repository's go.work and
+// attribute modules to the base graph that the head graph excludes.
+func TestGoDepsAtAnalyzerWorkspace(t *testing.T) {
+	root := t.TempDir()
+	git(t, root, "init")
+	git(t, root, "config", "user.email", "test@test.com")
+	git(t, root, "config", "user.name", "Test")
+	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/test\n\ngo 1.23\n")
+	writeFile(t, filepath.Join(root, "cmd/app/main.go"), "package main\nimport _ \"example.com/lib\"\nfunc main() {}\n")
+	writeFile(t, filepath.Join(root, "lib/go.mod"), "module example.com/lib\n\ngo 1.23\n")
+	writeFile(t, filepath.Join(root, "lib/foo.go"), "package lib\n")
+	writeFile(t, filepath.Join(root, "go.work"), "go 1.23\n\nuse (\n\t.\n\t./lib\n)\n")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "base")
+
+	graphs, err := (Go{Env: []string{"GOWORK=off"}}).DepsAt(root, "HEAD", []string{"./cmd/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"cmd/app/main.go"}; !slices.Equal(graphs["./cmd/app"], want) {
+		t.Fatalf("base graph = %v, want %v", graphs["./cmd/app"], want)
+	}
+}
