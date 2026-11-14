@@ -645,3 +645,24 @@ func TestRunWriteError(t *testing.T) {
 		}
 	})
 }
+
+// TestRunUnclassifiedFailsWithoutOutput prevents consumers from publishing a
+// selection when strict classification fails, in every CLI output mode.
+func TestRunUnclassifiedFailsWithoutOutput(t *testing.T) {
+	dir, base, _ := setupTestRepo(t)
+	writeFile(t, filepath.Join(dir, "should-build.yaml"), "unknown_file: error\ntargets:\n  api:\n    lang: none\n    include: [cmd/api/**, should-build.yaml, docs/**]\n")
+	writeFile(t, filepath.Join(dir, "unowned.txt"), "unknown input")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "unclassified input")
+	for _, mode := range []string{"--json", "--quiet", "--verbose"} {
+		t.Run(mode, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run([]string{"--repo", dir, mode, base, "HEAD"}, &stdout, &stderr); code != 2 {
+				t.Fatalf("exit %d, want 2: %s", code, &stderr)
+			}
+			if stdout.Len() != 0 || !strings.Contains(stderr.String(), "unclassified inputs: unowned.txt") {
+				t.Fatalf("stdout=%q stderr=%q", &stdout, &stderr)
+			}
+		})
+	}
+}

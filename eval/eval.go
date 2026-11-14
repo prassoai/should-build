@@ -1,7 +1,11 @@
 package eval
 
 import (
+	"fmt"
+	"maps"
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/prassoai/should-build/config"
 	"github.com/prassoai/should-build/match"
@@ -31,7 +35,7 @@ type FileMatch struct {
 // When empty, all targets in cfg are evaluated. Trigger propagation may
 // expand the result set beyond the initial set: if a building target triggers
 // another target not in only, that target is evaluated and added to the output.
-func Evaluate(cfg *config.Config, changed []string, deps map[string][]string, only []string) []Result {
+func Evaluate(cfg *config.Config, changed []string, deps map[string][]string, only []string) ([]Result, error) {
 	// Pre-filter globally ignored files.
 	filtered := make([]string, 0, len(changed))
 	for _, f := range changed {
@@ -68,13 +72,16 @@ func Evaluate(cfg *config.Config, changed []string, deps map[string][]string, on
 	// the targets that don't reference it. Computed once over all targets so a
 	// file owned by a target outside `only` still counts as claimed.
 	orphan := orphanSet(cfg, filtered, depSets)
+	if cfg.UnknownFile == config.UnknownFileError && len(orphan) > 0 {
+		return nil, fmt.Errorf("classify changed files: unclassified inputs: %s", strings.Join(slices.Sorted(maps.Keys(orphan)), ", "))
+	}
 
 	results := make([]Result, 0, len(names))
 	for _, name := range names {
 		results = append(results, evaluateTarget(cfg, name, cfg.Targets[name], filtered, depSets[name], orphan))
 	}
 
-	return propagateTriggers(cfg, filtered, depSets, orphan, results)
+	return propagateTriggers(cfg, filtered, depSets, orphan, results), nil
 }
 
 // orphanSet returns the files that no target accounts for: not matched by
