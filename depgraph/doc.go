@@ -6,7 +6,22 @@
 // Go source files (GoFiles) and //go:embed assets (EmbedFiles) are returned,
 // so a change to an embedded file rebuilds the binaries that embed it.
 // Go.DepsAll resolves multiple package patterns in one invocation while keeping
-// each pattern's dependency closure separate; Go.Deps resolves one pattern.
+// each pattern's dependency closure separate.
+//
+// Go.DepsAt does the same for an earlier revision, checked out from git into a
+// temporary directory. A file deleted by a change exists only there, so the
+// caller unions both graphs: the working tree attributes added and modified
+// files, the earlier revision attributes deleted ones. Loading at a revision
+// is best effort (go list -e), since a target added by the change has no
+// earlier graph to find. The checkout keeps the working tree's Go workspace:
+// a go.work inside the repository, tracked or not, is mapped to the same path
+// in the checkout, and one outside the repository is turned off.
+//
+// Go.Env adds variables to the go command's environment; GOOS=darwin loads the
+// files a darwin build compiles instead of the host's. Go.Context returns the
+// go/build context the go command uses under that environment, including
+// build tags from GOFLAGS, so a caller can ask build.Context.MatchFile which
+// files the graphs would compile.
 //
 // Files outside the repo root (standard library packages, vendored modules
 // fetched to GOMODCACHE, replace-directive targets above the repo) are

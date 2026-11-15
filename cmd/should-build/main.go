@@ -20,11 +20,20 @@
 package main
 
 import (
+	"bytes"
+	"cmp"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"go/ast"
+	"go/build"
+	"go/parser"
+	"go/token"
 	"io"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -109,23 +118,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	var paths []string
-	for _, target := range cfg.Targets {
-		if target.HasDepGraph() {
-			paths = append(paths, target.Path)
-		}
-	}
-	slices.Sort(paths)
-	graphs, err := (depgraph.Go{}).DepsAll(*repoPath, slices.Compact(paths))
+	deps, err := goDeps(cfg, *repoPath, baseRef, changed)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: dep graphs: %v\n", err)
 		return 2
-	}
-	deps := make(map[string][]string)
-	for name, target := range cfg.Targets {
-		if target.HasDepGraph() {
-			deps[name] = graphs[target.Path]
-		}
 	}
 
 	results, err := eval.Evaluate(cfg, changed, deps, []string(targets))
@@ -152,6 +148,200 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return writeJSON(stdout, stderr, results, *verbose)
 	}
 	return writeTable(stdout, stderr, results, *verbose)
+}
+
+// goDeps returns each Go target's dependency files: the union, over the
+// target's GOOS list, of the working tree's graph and baseRef's graph. The
+// working tree sees added and modified files; only the base still knows which
+// targets used a file the change deletes, so it loads only when needsBase says
+// it can matter. Targets sharing a GOOS share one load of each revision.
+func goDeps(cfg *config.Config, repoRoot, baseRef string, changed []string) (map[string][]string, error) {
+	platforms := make(map[string][]string)
+	for _, target := range cfg.Targets {
+		if !target.HasDepGraph() {
+			continue
+		}
+		for _, goos := range platformsOf(target) {
+			platforms[goos] = append(platforms[goos], target.Path)
+		}
+	}
+	type loaded struct {
+		goos  string
+		graph map[string][]string
+		err   error
+	}
+	results := make(chan loaded)
+	for goos, paths := range platforms {
+		go func() {
+			graph, err := platformDeps(repoRoot, baseRef, goos, paths, changed)
+			results <- loaded{goos, graph, err}
+		}()
+	}
+	graphs := make(map[string]map[string][]string, len(platforms))
+	var errs []error
+	for range platforms {
+		r := <-results
+		graphs[r.goos] = r.graph
+		errs = append(errs, r.err)
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
+	}
+	deps := make(map[string][]string)
+	for name, target := range cfg.Targets {
+		if !target.HasDepGraph() {
+			continue
+		}
+		for _, goos := range platformsOf(target) {
+			deps[name] = append(deps[name], graphs[goos][target.Path]...)
+		}
+	}
+	return deps, nil
+}
+
+// platformDeps loads paths for one GOOS ("" for the analyzer's own) from the
+// working tree and, when needsBase says it can matter, from baseRef, and unions each path's two graphs.
+func platformDeps(repoRoot, baseRef, goos string, paths, changed []string) (map[string][]string, error) {
+	analyzer := depgraph.Go{}
+	if goos != "" {
+		analyzer.Env = []string{"GOOS=" + goos}
+	}
+	slices.Sort(paths)
+	paths = slices.Compact(paths)
+	head, err := analyzer.DepsAll(repoRoot, paths)
+	if err != nil {
+		return nil, fmt.Errorf("loading %s working tree: %w", cmp.Or(goos, "default GOOS"), err)
+	}
+	ctx, err := analyzer.Context(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("loading %s build context: %w", cmp.Or(goos, "default GOOS"), err)
+	}
+	needed, err := needsBase(repoRoot, baseRef, ctx, changed)
+	if err != nil {
+		return nil, err
+	}
+	if !needed {
+		return head, nil
+	}
+	base, err := analyzer.DepsAt(repoRoot, baseRef, paths)
+	if err != nil {
+		return nil, fmt.Errorf("loading %s at %s: %w", cmp.Or(goos, "default GOOS"), baseRef, err)
+	}
+	graph := make(map[string][]string, len(paths))
+	for _, path := range paths {
+		graph[path] = slices.Concat(head[path], base[path])
+	}
+	return graph, nil
+}
+
+// needsBase reports whether baseRef's graph under ctx can attribute a changed
+// file that the head graph cannot. A target stops compiling an existing file
+// only when a file on its import path changes: one it still compiles, which
+// its head graph attributes, or one that compiled under ctx at baseRef and no
+// longer does, because it was deleted or its name, build constraint or cgo
+// import now excludes it. Only the last kind needs the base. Test files, and Go
+// files in directories the go command ignores, are in no graph; other files
+// there, such as testdata, can still be embedded. A deleted non-Go file may
+// have been an embedded asset; only the base graph can tell.
+func needsBase(repoRoot, baseRef string, ctx build.Context, changed []string) (bool, error) {
+	for _, file := range changed {
+		if strings.HasSuffix(file, "_test.go") || strings.HasSuffix(file, ".go") && slices.ContainsFunc(strings.Split(filepath.Dir(file), "/"), ignoredDir) {
+			continue
+		}
+		if !strings.HasSuffix(file, ".go") {
+			if _, err := os.Lstat(filepath.Join(repoRoot, file)); err != nil {
+				return true, nil
+			}
+			continue
+		}
+		head, found, err := headContent(filepath.Join(repoRoot, file))
+		if err != nil {
+			return false, err
+		}
+		if found && compiles(ctx, file, head) == nil {
+			continue
+		}
+		base, found, err := blobAt(repoRoot, baseRef, file)
+		if err != nil {
+			return false, err
+		}
+		if found && !errors.Is(compiles(ctx, file, base), errExcluded) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ignoredDir reports whether the go command skips packages in a directory
+// with this name.
+func ignoredDir(name string) bool {
+	return name == "testdata" || strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") && name != "."
+}
+
+// errExcluded reports a Go file that ctx's build leaves out.
+var errExcluded = errors.New("excluded from build")
+
+// compiles reports whether content, as file, is a pure Go file ctx compiles:
+// nil if so, errExcluded if ctx leaves it out, and the parse error for a file
+// too malformed to tell. build.Context.MatchFile does not check cgo, and the
+// graph holds only pure Go files, so importing "C" counts as excluded.
+func compiles(ctx build.Context, file string, content []byte) error {
+	ctx.OpenFile = func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(content)), nil }
+	match, err := ctx.MatchFile(filepath.Dir(file), filepath.Base(file))
+	if err != nil {
+		return fmt.Errorf("matching %s: %w", file, err)
+	}
+	if !match {
+		return errExcluded
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), file, content, parser.ImportsOnly)
+	if err != nil {
+		return fmt.Errorf("parsing %s: %w", file, err)
+	}
+	if slices.ContainsFunc(f.Imports, func(spec *ast.ImportSpec) bool { return spec.Path.Value == `"C"` }) {
+		return errExcluded
+	}
+	return nil
+}
+
+// headContent returns the working tree's content at path, and whether a file
+// is there. A directory that replaced the file counts as absent.
+func headContent(path string) ([]byte, bool, error) {
+	content, err := os.ReadFile(path)
+	if err == nil {
+		return content, true, nil
+	}
+	if info, statErr := os.Stat(path); errors.Is(err, fs.ErrNotExist) || statErr == nil && info.IsDir() {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("reading %s: %w", path, err)
+}
+
+// blobAt returns file's content at rev, and whether rev has it as a file.
+func blobAt(repoRoot, rev, file string) ([]byte, bool, error) {
+	tree, err := exec.Command("git", "-C", repoRoot, "ls-tree", "-z", rev, "--", file).Output()
+	if err != nil {
+		return nil, false, fmt.Errorf("listing %s at %s: %w", file, rev, err)
+	}
+	// <mode> SP <type> SP <object> TAB <file> NUL
+	fields := strings.Fields(strings.SplitN(string(tree), "\t", 2)[0])
+	if len(fields) != 3 || fields[1] != "blob" {
+		return nil, false, nil
+	}
+	blob, err := exec.Command("git", "-C", repoRoot, "cat-file", "blob", fields[2]).Output()
+	if err != nil {
+		return nil, false, fmt.Errorf("reading %s at %s: %w", file, rev, err)
+	}
+	return blob, true, nil
+}
+
+// platformsOf returns the GOOS values whose graphs make up target's
+// dependencies; "" is the analyzer's own GOOS.
+func platformsOf(target config.Target) []string {
+	if len(target.GOOS) == 0 {
+		return []string{""}
+	}
+	return target.GOOS
 }
 
 func writeJSON(stdout, stderr io.Writer, results []eval.Result, verbose bool) int {

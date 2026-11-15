@@ -3,7 +3,11 @@ package depgraph
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"go/build"
+	"io/fs"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -11,8 +15,11 @@ import (
 	"strings"
 )
 
-// Go implements Analyzer for Go source using "go list".
-type Go struct{}
+// Go analyzes Go source using "go list". Env is added to the go command's
+// environment, for example GOOS=darwin to load another platform's files.
+type Go struct {
+	Env []string
+}
 
 // goPackage is the subset of "go list -json" output we need. EmbedFiles holds
 // files pulled in by //go:embed directives (paths relative to Dir, like
@@ -29,19 +36,135 @@ type goPackage struct {
 	Standard   bool     `json:"Standard"`
 }
 
-// Deps returns all Go source files and //go:embed assets transitively imported
-// by importPath, filtered to those under repoRoot. Standard library files are
-// excluded.
-func (Go) Deps(repoRoot, importPath string) ([]string, error) {
-	deps, err := (Go{}).DepsAll(repoRoot, []string{importPath})
+// Context returns the build context the go command uses under g.Env, with
+// the GOOS, GOARCH, cgo setting and build tags (including any from GOFLAGS)
+// that DepsAll and DepsAt load with, so build.Context.MatchFile agrees with
+// their graphs about which files compile.
+func (g Go) Context(repoRoot string) (build.Context, error) {
+	cmd := exec.Command("go", "list", "-f", "{{with context}}{{.GOOS}}\n{{.GOARCH}}\n{{.CgoEnabled}}\n{{join .BuildTags \",\"}}\n{{join .ToolTags \",\"}}\n{{join .ReleaseTags \",\"}}{{end}}", "runtime")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), g.Env...)
+	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("loading dependencies for %s: %w", importPath, err)
+		return build.Context{}, fmt.Errorf("go list context: %w", err)
 	}
-	return deps[importPath], nil
+	fields := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(fields) != 6 {
+		return build.Context{}, fmt.Errorf("go list context: unexpected output %q", out)
+	}
+	tags := func(field string) []string { return strings.FieldsFunc(field, func(r rune) bool { return r == ',' }) }
+	ctx := build.Default
+	ctx.GOOS, ctx.GOARCH, ctx.CgoEnabled = fields[0], fields[1], fields[2] == "true"
+	ctx.BuildTags, ctx.ToolTags, ctx.ReleaseTags = tags(fields[3]), tags(fields[4]), tags(fields[5])
+	return ctx, nil
 }
 
-// DepsAll loads packages once and returns each input pattern's transitive files.
-func (Go) DepsAll(repoRoot string, importPaths []string) (map[string][]string, error) {
+// DepsAll loads the working tree at repoRoot once and returns each input
+// pattern's transitive files. Any pattern or package that fails to load fails
+// the whole call.
+func (g Go) DepsAll(repoRoot string, importPaths []string) (map[string][]string, error) {
+	return load(repoRoot, importPaths, false, g.Env...)
+}
+
+// DepsAt returns each input pattern's transitive files as of revision rev,
+// read from the repository at repoRoot without touching its index, working
+// tree or worktree list.
+//
+// The result is best effort: packages that fail to load at rev, including a
+// pattern that does not exist there yet, contribute only what go list could
+// resolve. It describes the files a target used to depend on, so a deleted
+// file still selects its former consumers.
+func (g Go) DepsAt(repoRoot, rev string, importPaths []string) (map[string][]string, error) {
+	if len(importPaths) == 0 {
+		return map[string][]string{}, nil
+	}
+	work, err := os.MkdirTemp("", "should-build-")
+	if err != nil {
+		return nil, fmt.Errorf("creating checkout directory for %s: %w", rev, err)
+	}
+	defer os.RemoveAll(work)
+	tree := filepath.Join(work, "tree")
+	if err := checkout(repoRoot, rev, filepath.Join(work, "index"), tree); err != nil {
+		return nil, fmt.Errorf("checking out %s: %w", rev, err)
+	}
+	gowork, err := workspace(repoRoot, tree, g.Env)
+	if err != nil {
+		return nil, fmt.Errorf("mapping go workspace into %s: %w", rev, err)
+	}
+	return load(tree, importPaths, true, append(slices.Clone(g.Env), "GOWORK="+gowork)...)
+}
+
+// workspace returns the GOWORK value that gives the checkout at tree the same
+// workspace the working tree at repoRoot uses under env. A go.work inside the repository
+// maps to the same path in tree, copied there with its go.work.sum when the
+// revision does not track it, so an ignored workspace file still joins the
+// sibling modules. Inheriting GOWORK unchanged would instead load the working
+// tree's modules. A workspace outside the repository cannot list the checkout,
+// so it is turned off.
+func workspace(repoRoot, tree string, env []string) (string, error) {
+	cmd := exec.Command("go", "env", "GOWORK")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("go env GOWORK: %w", err)
+	}
+	gowork := strings.TrimSpace(string(out))
+	switch gowork {
+	case "", "off":
+		return gowork, nil
+	}
+	absRoot, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolving repo root: %w", err)
+	}
+	rel, err := filepath.Rel(absRoot, gowork)
+	if err != nil || outsideRoot(rel) {
+		return "off", nil
+	}
+	mapped := filepath.Join(tree, rel)
+	if _, err := os.Stat(mapped); err == nil {
+		return mapped, nil
+	}
+	for _, name := range []string{rel, rel + ".sum"} {
+		data, err := os.ReadFile(filepath.Join(absRoot, name))
+		if errors.Is(err, fs.ErrNotExist) && name != rel {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("reading %s: %w", name, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(tree, name)), 0o755); err != nil {
+			return "", fmt.Errorf("creating directory for %s: %w", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(tree, name), data, 0o644); err != nil {
+			return "", fmt.Errorf("copying %s: %w", name, err)
+		}
+	}
+	return mapped, nil
+}
+
+// checkout writes rev's tree to dir through a private index file, so the
+// repository's own index and working tree are left alone.
+func checkout(repoRoot, rev, index, dir string) error {
+	for _, args := range [][]string{
+		{"read-tree", rev},
+		{"checkout-index", "--all", "--prefix=" + dir + string(filepath.Separator)},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoRoot
+		cmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+index)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
+}
+
+// load runs one go list over importPaths in repoRoot, with env added to the
+// process environment. With tolerant set, go list reports broken packages
+// instead of failing (-e).
+func load(repoRoot string, importPaths []string, tolerant bool, env ...string) (map[string][]string, error) {
 	results := make(map[string][]string, len(importPaths))
 	if len(importPaths) == 0 {
 		return results, nil
@@ -51,8 +174,13 @@ func (Go) DepsAll(repoRoot string, importPaths []string) (map[string][]string, e
 		return nil, fmt.Errorf("resolving repo root: %w", err)
 	}
 
-	cmd := exec.Command("go", append([]string{"list", "-json", "-deps"}, importPaths...)...)
+	args := []string{"list", "-json", "-deps"}
+	if tolerant {
+		args = append(args, "-e")
+	}
+	cmd := exec.Command("go", append(args, importPaths...)...)
 	cmd.Dir = absRoot
+	cmd.Env = append(os.Environ(), env...)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
