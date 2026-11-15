@@ -967,3 +967,22 @@ func TestUnknownFileError(t *testing.T) {
 		}
 	}
 }
+
+// TestGoFilesDoNotReachUnknownPolicy keeps disconnected Go commands and
+// packages out of classification failures and repo-wide fallback builds.
+func TestGoFilesDoNotReachUnknownPolicy(t *testing.T) {
+	for _, policy := range []string{"error", "trigger_all", "ignore"} {
+		t.Run(policy, func(t *testing.T) {
+			cfg := mustCfg(t, config.Global{}, policy, map[string]config.Target{
+				"api": {Path: "./cmd/api"},
+				"web": {Lang: "none", Include: []string{"web/**"}},
+			})
+			for _, changed := range [][]string{{"cmd/backfill/main.go", "unused/lib.go", "unused/lib_test.go"}, {"lib/used.go"}} {
+				results := mustEvaluate(t, cfg, changed, map[string][]string{"api": {"lib/used.go"}}, nil)
+				if results[0].Build != (changed[0] == "lib/used.go") || results[1].Build {
+					t.Fatalf("changes %v selected %+v", changed, results)
+				}
+			}
+		})
+	}
+}

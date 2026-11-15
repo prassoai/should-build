@@ -263,7 +263,7 @@ targets:
       - "web/**"
 ```
 
-With `unknown_file: error`, any changed file with no declared owner fails
+With `unknown_file: error`, any changed non-Go file with no declared owner fails
 classification (exit code 2), lists the unclassified paths, and emits no build
 selection. Globally ignored files are allowed. Ownership includes all targets'
 include patterns and dependency graphs, plus global trigger patterns.
@@ -367,7 +367,11 @@ Steps 5 and 6 are the repo-wide fallbacks — they select a target without
 naming any of its inputs. A target with `selection: explicit` skips both; see
 [Selection modes](#selection-modes).
 
-A file is an **orphan** only if *no* target accounts for it — it matches no
+Go files never reach `unknown_file`: their consumers are determined by dependency
+analysis and explicit patterns. A Go file outside all target graphs needs no
+ownership rule and does not trigger unrelated builds.
+
+A non-Go file is an **orphan** only if *no* target accounts for it — it matches no
 target's `include`, is in no target's dependency graph, and matches no
 `global.trigger_all` pattern. The `unknown_file: trigger_all` safety net fires
 for orphans alone. A file that some target depends on is not an orphan, so it

@@ -672,7 +672,7 @@ func TestRunUnclassifiedFailsWithoutOutput(t *testing.T) {
 // TestRunDeletedGoFileSelectsFormerConsumer requires deleting a Go file to
 // select exactly the targets that imported it. The deleted file is absent from
 // the head checkout, so only the base revision's graph can attribute it;
-// without that it is unclassified and unknown_file: error rejects the change.
+// without that its former consumers would be skipped.
 func TestRunDeletedGoFileSelectsFormerConsumer(t *testing.T) {
 	dir := t.TempDir()
 	gitRun(t, dir, "init")
@@ -718,7 +718,7 @@ targets:
 // selected by a file compiled only for one of those systems, whether the
 // change edits or deletes it, while a target built only for the analyzer's
 // own system is not. Without per-platform graphs, foo_darwin.go is in no
-// graph on Linux and unknown_file: error rejects the change.
+// graph on Linux and its consumers would be skipped.
 func TestRunGOOSSelectsPlatformFiles(t *testing.T) {
 	dir := t.TempDir()
 	gitRun(t, dir, "init")
@@ -901,6 +901,44 @@ func TestNeedsBase(t *testing.T) {
 		}
 		if got != tc.want {
 			t.Errorf("needsBase(%v, %v) = %v, want %v", tc.env, tc.changed, got, tc.want)
+		}
+	}
+}
+
+// TestRunDisconnectedGoCommand needs no ownership rule for a new operator
+// command, while an imported package still selects its actual consumer.
+func TestRunDisconnectedGoCommand(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init")
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+	gitRun(t, dir, "config", "user.name", "Test")
+	writeFile(t, filepath.Join(dir, "should-build.yaml"), "unknown_file: error\ntargets:\n  api:\n    path: ./cmd/api\n  worker:\n    path: ./cmd/worker\n")
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/test\n\ngo 1.23\n")
+	writeFile(t, filepath.Join(dir, "cmd/api/main.go"), "package main\nimport _ \"example.com/test/lib\"\nfunc main() {}\n")
+	writeFile(t, filepath.Join(dir, "cmd/worker/main.go"), "package main\nfunc main() {}\n")
+	writeFile(t, filepath.Join(dir, "lib/lib.go"), "package lib\n")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "base")
+	base := gitSHA(t, dir, "HEAD")
+	writeFile(t, filepath.Join(dir, "cmd/backfill/main.go"), "package main\nfunc main() {}\n")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "new command")
+	for _, imported := range []bool{false, true} {
+		if imported {
+			writeFile(t, filepath.Join(dir, "lib/new.go"), "package lib\nconst New = true\n")
+			gitRun(t, dir, "add", ".")
+			gitRun(t, dir, "commit", "-m", "imported package change")
+		}
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"--json", "--repo", dir, base, "HEAD"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		var results []eval.Result
+		if err := json.Unmarshal(stdout.Bytes(), &results); err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 2 || results[0].Build != imported || results[1].Build {
+			t.Fatalf("imported=%v: %+v", imported, results)
 		}
 	}
 }
