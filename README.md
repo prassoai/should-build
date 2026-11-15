@@ -137,7 +137,12 @@ checkout, which should be the head, and one loaded from the base commit, which
 `should-build` checks out into a temporary directory. The base graph is what
 attributes a deleted file to the targets that imported it, so a deletion needs
 no hand-maintained directory pattern. It is best effort: a target that does not
-exist at the base contributes nothing there.
+exist at the base contributes nothing there. The base for a `GOOS` is loaded only
+when a changed Go file compiled for it at the base and no longer does, because
+it was deleted or its name, build constraint or cgo import now excludes it, or
+when a non-Go file that may have been embedded is deleted. Any other way a
+target stops compiling a file changes a file the head graph attributes, so a
+change that only edits files skips the base checkout.
 
 Both graphs are computed for the Go toolchain's own `GOOS`, so a file behind a
 build constraint for another system, such as `prompt_darwin.go` on a Linux

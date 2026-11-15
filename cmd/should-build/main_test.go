@@ -765,3 +765,126 @@ targets:
 		}
 	}
 }
+
+// TestRunFileLeavingPlatformSelectsFormerConsumer requires a target to be
+// selected when an edit drops an existing file from its platform's build. The
+// file still compiles for darwin, so the decision to load the base must be
+// made per GOOS: one made for all platforms at once could skip the linux base
+// and leave server unselected though its binary lost the file.
+func TestRunFileLeavingPlatformSelectsFormerConsumer(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init")
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+	gitRun(t, dir, "config", "user.name", "Test")
+	writeFile(t, filepath.Join(dir, "should-build.yaml"), `
+unknown_file: error
+targets:
+  cli:
+    path: ./cmd/cli
+    goos: [linux, darwin]
+  server:
+    path: ./cmd/server
+    goos: [linux]
+`)
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/test\n\ngo 1.23\n")
+	writeFile(t, filepath.Join(dir, "cmd/cli/main.go"), "package main\nimport _ \"example.com/test/lib\"\nfunc main() {}\n")
+	writeFile(t, filepath.Join(dir, "cmd/server/main.go"), "package main\nimport _ \"example.com/test/lib\"\nfunc main() {}\n")
+	writeFile(t, filepath.Join(dir, "lib/lib.go"), "package lib\n")
+	writeFile(t, filepath.Join(dir, "lib/prompt.go"), "package lib\n")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "base")
+	base := gitSHA(t, dir, "HEAD")
+	writeFile(t, filepath.Join(dir, "lib/prompt.go"), "//go:build darwin\n\npackage lib\n")
+	gitRun(t, dir, "commit", "-qam", "darwin only")
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--json", "--repo", dir, base, gitSHA(t, dir, "HEAD")}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	var results []eval.Result
+	if err := json.Unmarshal(stdout.Bytes(), &results); err != nil {
+		t.Fatal(err)
+	}
+	want := []eval.Result{
+		{Target: "cli", Build: true, Files: []eval.FileMatch{{Path: "lib/prompt.go", Reason: "go-dep"}}},
+		{Target: "server", Build: true, Files: []eval.FileMatch{{Path: "lib/prompt.go", Reason: "go-dep"}}},
+	}
+	if !reflect.DeepEqual(results, want) {
+		t.Fatalf("got %+v, want %+v", results, want)
+	}
+}
+
+// TestNeedsBase requires the base graph to load exactly when a changed file
+// compiled for a platform at the base and no longer does: it was deleted, or
+// its name, build constraint or cgo import now excludes it. A deleted non-Go
+// file may have been embedded, so it loads the base too. Edits that keep a
+// file compiling, files that never compiled for the platform (an
+// integration-tagged helper), test files and testdata change in nearly every
+// commit and must skip the base checkout.
+func TestNeedsBase(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init")
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+	gitRun(t, dir, "config", "user.name", "Test")
+	files := map[string]string{
+		"lib/lib.go":              "package lib\n",
+		"lib/lib_test.go":         "package lib\n",
+		"lib/gone.go":             "package lib\n",
+		"lib/gone_test.go":        "package lib\n",
+		"lib/integration.go":      "//go:build integration\n\npackage lib\n",
+		"lib/integration_gone.go": "//go:build integration\n\npackage lib\n",
+		"lib/moved.go":            "package lib\n",
+		"lib/cgo.go":              "package lib\n",
+		"lib/broken.go":           "package lib\n",
+		"lib/testdata/bad.go":     "package\n",
+		"static/logo.svg":         "",
+		"web/app.tsx":             "",
+	}
+	for name, content := range files {
+		writeFile(t, filepath.Join(dir, name), content)
+	}
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "base")
+	base := gitSHA(t, dir, "HEAD")
+	for name, content := range map[string]string{
+		"lib/lib.go":               "package lib\nconst A = 1\n",
+		"lib/lib_test.go":          "package lib\nconst B = 1\n",
+		"lib/integration.go":       "//go:build integration\n\npackage lib\nconst C = 1\n",
+		"lib/added_integration.go": "//go:build integration\n\npackage lib\n",
+		"lib/moved.go":             "//go:build darwin\n\npackage lib\n",
+		"lib/cgo.go":               "package lib\n\nimport \"C\"\n",
+		"lib/broken.go":            "package\n",
+		"lib/testdata/bad.go":      "package\n\n",
+		"web/app.tsx":              "x",
+	} {
+		writeFile(t, filepath.Join(dir, name), content)
+	}
+	for _, name := range []string{"lib/gone.go", "lib/gone_test.go", "lib/integration_gone.go", "static/logo.svg"} {
+		gitRun(t, dir, "rm", "-q", name)
+	}
+
+	for _, tc := range []struct {
+		goos    string
+		changed []string
+		want    bool
+	}{
+		{"linux", nil, false},
+		{"linux", []string{"lib/lib.go", "lib/lib_test.go", "web/app.tsx", "lib/testdata/bad.go"}, false},
+		{"linux", []string{"lib/integration.go", "lib/added_integration.go", "lib/integration_gone.go"}, false},
+		{"linux", []string{"lib/gone_test.go"}, false},
+		{"linux", []string{"lib/gone.go"}, true},
+		{"linux", []string{"static/logo.svg"}, true},
+		{"linux", []string{"lib/moved.go"}, true},
+		{"darwin", []string{"lib/moved.go"}, false},
+		{"linux", []string{"lib/cgo.go"}, true},
+		{"linux", []string{"lib/broken.go"}, true},
+	} {
+		got, err := needsBase(dir, base, tc.goos, tc.changed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != tc.want {
+			t.Errorf("needsBase(%s, %v) = %v, want %v", tc.goos, tc.changed, got, tc.want)
+		}
+	}
+}
