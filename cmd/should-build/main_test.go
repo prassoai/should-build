@@ -817,7 +817,7 @@ targets:
 // TestNeedsBase requires the base graph to load exactly when a changed file
 // compiled for a platform at the base and no longer does: it was deleted, or
 // its name, build constraint or cgo import now excludes it. A deleted non-Go
-// file may have been embedded, so it loads the base too. Edits that keep a
+// file may have been embedded, even from testdata, so it loads the base too. Edits that keep a
 // file compiling, files that never compiled for the platform (an
 // integration-tagged helper), test files and testdata change in nearly every
 // commit and must skip the base checkout.
@@ -838,6 +838,7 @@ func TestNeedsBase(t *testing.T) {
 		"lib/broken.go":           "package lib\n",
 		"lib/testdata/bad.go":     "package\n",
 		"static/logo.svg":         "",
+		"lib/testdata/golden.txt": "",
 		"web/app.tsx":             "",
 	}
 	for name, content := range files {
@@ -859,7 +860,7 @@ func TestNeedsBase(t *testing.T) {
 	} {
 		writeFile(t, filepath.Join(dir, name), content)
 	}
-	for _, name := range []string{"lib/gone.go", "lib/gone_test.go", "lib/integration_gone.go", "static/logo.svg"} {
+	for _, name := range []string{"lib/gone.go", "lib/gone_test.go", "lib/integration_gone.go", "static/logo.svg", "lib/testdata/golden.txt"} {
 		gitRun(t, dir, "rm", "-q", name)
 	}
 
@@ -874,6 +875,7 @@ func TestNeedsBase(t *testing.T) {
 		{"linux", []string{"lib/gone_test.go"}, false},
 		{"linux", []string{"lib/gone.go"}, true},
 		{"linux", []string{"static/logo.svg"}, true},
+		{"linux", []string{"lib/testdata/golden.txt"}, true},
 		{"linux", []string{"lib/moved.go"}, true},
 		{"darwin", []string{"lib/moved.go"}, false},
 		{"linux", []string{"lib/cgo.go"}, true},

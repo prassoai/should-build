@@ -235,14 +235,15 @@ func platformDeps(repoRoot, baseRef, goos string, paths, changed []string) (map[
 // only when a file on its import path changes: one it still compiles, which
 // its head graph attributes, or one that compiled for goos at baseRef and no
 // longer does, because it was deleted or its name, build constraint or cgo
-// import now excludes it. Only the last kind needs the base. Test files, and
-// files in directories the go command ignores, are in no graph. A deleted non-Go file may have been an embedded asset; only the
+// import now excludes it. Only the last kind needs the base. Test files, and Go
+// files in directories the go command ignores, are in no graph; other files
+// there, such as testdata, can still be embedded. A deleted non-Go file may have been an embedded asset; only the
 // base graph can tell.
 func needsBase(repoRoot, baseRef, goos string, changed []string) (bool, error) {
 	ctx := build.Default
 	ctx.GOOS = cmp.Or(goos, ctx.GOOS)
 	for _, file := range changed {
-		if strings.HasSuffix(file, "_test.go") || slices.ContainsFunc(strings.Split(filepath.Dir(file), "/"), ignoredDir) {
+		if strings.HasSuffix(file, "_test.go") || strings.HasSuffix(file, ".go") && slices.ContainsFunc(strings.Split(filepath.Dir(file), "/"), ignoredDir) {
 			continue
 		}
 		head, err := os.ReadFile(filepath.Join(repoRoot, file))
