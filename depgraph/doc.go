@@ -18,7 +18,10 @@
 // in the checkout, and one outside the repository is turned off.
 //
 // Go.Env adds variables to the go command's environment; GOOS=darwin loads the
-// files a darwin build compiles instead of the host's.
+// files a darwin build compiles instead of the host's. Go.Context returns the
+// go/build context the go command uses under that environment, including
+// build tags from GOFLAGS, so a caller can ask build.Context.MatchFile which
+// files the graphs would compile.
 //
 // Files outside the repo root (standard library packages, vendored modules
 // fetched to GOMODCACHE, replace-directive targets above the repo) are

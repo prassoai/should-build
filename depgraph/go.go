@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/build"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -33,6 +34,29 @@ type goPackage struct {
 	GoFiles    []string `json:"GoFiles"`
 	EmbedFiles []string `json:"EmbedFiles"`
 	Standard   bool     `json:"Standard"`
+}
+
+// Context returns the build context the go command uses under g.Env, with
+// the GOOS, GOARCH, cgo setting and build tags (including any from GOFLAGS)
+// that DepsAll and DepsAt load with, so build.Context.MatchFile agrees with
+// their graphs about which files compile.
+func (g Go) Context(repoRoot string) (build.Context, error) {
+	cmd := exec.Command("go", "list", "-f", "{{with context}}{{.GOOS}}\n{{.GOARCH}}\n{{.CgoEnabled}}\n{{join .BuildTags \",\"}}\n{{join .ToolTags \",\"}}\n{{join .ReleaseTags \",\"}}{{end}}", "runtime")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), g.Env...)
+	out, err := cmd.Output()
+	if err != nil {
+		return build.Context{}, fmt.Errorf("go list context: %w", err)
+	}
+	fields := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(fields) != 6 {
+		return build.Context{}, fmt.Errorf("go list context: unexpected output %q", out)
+	}
+	tags := func(field string) []string { return strings.FieldsFunc(field, func(r rune) bool { return r == ',' }) }
+	ctx := build.Default
+	ctx.GOOS, ctx.GOARCH, ctx.CgoEnabled = fields[0], fields[1], fields[2] == "true"
+	ctx.BuildTags, ctx.ToolTags, ctx.ReleaseTags = tags(fields[3]), tags(fields[4]), tags(fields[5])
+	return ctx, nil
 }
 
 // DepsAll loads the working tree at repoRoot once and returns each input

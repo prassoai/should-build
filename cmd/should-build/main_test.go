@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prassoai/should-build/depgraph"
 	"github.com/prassoai/should-build/eval"
 )
 
@@ -815,12 +816,13 @@ targets:
 }
 
 // TestNeedsBase requires the base graph to load exactly when a changed file
-// compiled for a platform at the base and no longer does: it was deleted, or
-// its name, build constraint or cgo import now excludes it. A deleted non-Go
-// file may have been embedded, even from testdata, so it loads the base too. Edits that keep a
-// file compiling, files that never compiled for the platform (an
-// integration-tagged helper), test files and testdata change in nearly every
-// commit and must skip the base checkout.
+// compiled at the base and no longer does: it was deleted, a directory
+// replaced it, or its name, build constraint or cgo import now excludes it.
+// Build tags from GOFLAGS count, as they do for the graphs. A deleted non-Go
+// file may have been embedded, even from testdata, so it loads the base too.
+// Edits that keep a file compiling, files that never compiled (an
+// integration-tagged helper without the tag), test files and testdata change
+// in nearly every commit and must skip the base checkout.
 func TestNeedsBase(t *testing.T) {
 	dir := t.TempDir()
 	gitRun(t, dir, "init")
@@ -839,6 +841,7 @@ func TestNeedsBase(t *testing.T) {
 		"lib/testdata/bad.go":     "package\n",
 		"static/logo.svg":         "",
 		"lib/testdata/golden.txt": "",
+		"lib/replaced.go":         "package lib\n",
 		"web/app.tsx":             "",
 	}
 	for name, content := range files {
@@ -847,6 +850,7 @@ func TestNeedsBase(t *testing.T) {
 	gitRun(t, dir, "add", ".")
 	gitRun(t, dir, "commit", "-m", "base")
 	base := gitSHA(t, dir, "HEAD")
+	gitRun(t, dir, "rm", "-q", "lib/replaced.go")
 	for name, content := range map[string]string{
 		"lib/lib.go":               "package lib\nconst A = 1\n",
 		"lib/lib_test.go":          "package lib\nconst B = 1\n",
@@ -856,6 +860,7 @@ func TestNeedsBase(t *testing.T) {
 		"lib/cgo.go":               "package lib\n\nimport \"C\"\n",
 		"lib/broken.go":            "package\n",
 		"lib/testdata/bad.go":      "package\n\n",
+		"lib/replaced.go/doc.go":   "package replaced\n",
 		"web/app.tsx":              "x",
 	} {
 		writeFile(t, filepath.Join(dir, name), content)
@@ -864,29 +869,38 @@ func TestNeedsBase(t *testing.T) {
 		gitRun(t, dir, "rm", "-q", name)
 	}
 
+	linux, darwin := []string{"GOOS=linux"}, []string{"GOOS=darwin"}
+	integration := []string{"GOOS=linux", "GOFLAGS=-tags=integration"}
 	for _, tc := range []struct {
-		goos    string
+		env     []string
 		changed []string
 		want    bool
 	}{
-		{"linux", nil, false},
-		{"linux", []string{"lib/lib.go", "lib/lib_test.go", "web/app.tsx", "lib/testdata/bad.go"}, false},
-		{"linux", []string{"lib/integration.go", "lib/added_integration.go", "lib/integration_gone.go"}, false},
-		{"linux", []string{"lib/gone_test.go"}, false},
-		{"linux", []string{"lib/gone.go"}, true},
-		{"linux", []string{"static/logo.svg"}, true},
-		{"linux", []string{"lib/testdata/golden.txt"}, true},
-		{"linux", []string{"lib/moved.go"}, true},
-		{"darwin", []string{"lib/moved.go"}, false},
-		{"linux", []string{"lib/cgo.go"}, true},
-		{"linux", []string{"lib/broken.go"}, true},
+		{linux, nil, false},
+		{linux, []string{"lib/lib.go", "lib/lib_test.go", "web/app.tsx", "lib/testdata/bad.go"}, false},
+		{linux, []string{"lib/integration.go", "lib/added_integration.go", "lib/integration_gone.go"}, false},
+		{linux, []string{"lib/gone_test.go"}, false},
+		{linux, []string{"lib/gone.go"}, true},
+		{linux, []string{"static/logo.svg"}, true},
+		{linux, []string{"lib/testdata/golden.txt"}, true},
+		{linux, []string{"lib/moved.go"}, true},
+		{darwin, []string{"lib/moved.go"}, false},
+		{linux, []string{"lib/cgo.go"}, true},
+		{linux, []string{"lib/broken.go"}, true},
+		{linux, []string{"lib/replaced.go"}, true},
+		{integration, []string{"lib/integration_gone.go"}, true},
+		{integration, []string{"lib/integration.go", "lib/added_integration.go"}, false},
 	} {
-		got, err := needsBase(dir, base, tc.goos, tc.changed)
+		ctx, err := (depgraph.Go{Env: tc.env}).Context(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := needsBase(dir, base, ctx, tc.changed)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got != tc.want {
-			t.Errorf("needsBase(%s, %v) = %v, want %v", tc.goos, tc.changed, got, tc.want)
+			t.Errorf("needsBase(%v, %v) = %v, want %v", tc.env, tc.changed, got, tc.want)
 		}
 	}
 }

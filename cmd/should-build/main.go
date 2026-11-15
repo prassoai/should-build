@@ -212,7 +212,11 @@ func platformDeps(repoRoot, baseRef, goos string, paths, changed []string) (map[
 	if err != nil {
 		return nil, fmt.Errorf("loading %s working tree: %w", cmp.Or(goos, "default GOOS"), err)
 	}
-	needed, err := needsBase(repoRoot, baseRef, goos, changed)
+	ctx, err := analyzer.Context(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("loading %s build context: %w", cmp.Or(goos, "default GOOS"), err)
+	}
+	needed, err := needsBase(repoRoot, baseRef, ctx, changed)
 	if err != nil {
 		return nil, err
 	}
@@ -230,33 +234,29 @@ func platformDeps(repoRoot, baseRef, goos string, paths, changed []string) (map[
 	return graph, nil
 }
 
-// needsBase reports whether baseRef's graph for goos can attribute a changed
+// needsBase reports whether baseRef's graph under ctx can attribute a changed
 // file that the head graph cannot. A target stops compiling an existing file
 // only when a file on its import path changes: one it still compiles, which
-// its head graph attributes, or one that compiled for goos at baseRef and no
+// its head graph attributes, or one that compiled under ctx at baseRef and no
 // longer does, because it was deleted or its name, build constraint or cgo
 // import now excludes it. Only the last kind needs the base. Test files, and Go
 // files in directories the go command ignores, are in no graph; other files
-// there, such as testdata, can still be embedded. A deleted non-Go file may have been an embedded asset; only the
-// base graph can tell.
-func needsBase(repoRoot, baseRef, goos string, changed []string) (bool, error) {
-	ctx := build.Default
-	ctx.GOOS = cmp.Or(goos, ctx.GOOS)
+// there, such as testdata, can still be embedded. A deleted non-Go file may
+// have been an embedded asset; only the base graph can tell.
+func needsBase(repoRoot, baseRef string, ctx build.Context, changed []string) (bool, error) {
 	for _, file := range changed {
 		if strings.HasSuffix(file, "_test.go") || strings.HasSuffix(file, ".go") && slices.ContainsFunc(strings.Split(filepath.Dir(file), "/"), ignoredDir) {
 			continue
 		}
-		head, err := os.ReadFile(filepath.Join(repoRoot, file))
+		head, found, err := headContent(filepath.Join(repoRoot, file))
+		if err != nil {
+			return false, err
+		}
+		isGo := strings.HasSuffix(file, ".go")
 		switch {
-		case err == nil && !strings.HasSuffix(file, ".go"):
+		case found && (!isGo || compiles(ctx, file, head) == nil):
 			continue
-		case err == nil:
-			if compiles(ctx, file, head) == nil {
-				continue
-			}
-		case !errors.Is(err, fs.ErrNotExist):
-			return false, fmt.Errorf("reading %s: %w", file, err)
-		case !strings.HasSuffix(file, ".go"):
+		case !found && !isGo:
 			return true, nil
 		}
 		base, found, err := blobAt(repoRoot, baseRef, file)
@@ -302,17 +302,30 @@ func compiles(ctx build.Context, file string, content []byte) error {
 	return nil
 }
 
-// blobAt returns file's content at rev, and whether rev has it.
+// headContent returns the working tree's content at path, and whether a file
+// is there. A directory that replaced the file counts as absent.
+func headContent(path string) ([]byte, bool, error) {
+	content, err := os.ReadFile(path)
+	if err == nil {
+		return content, true, nil
+	}
+	if info, statErr := os.Stat(path); errors.Is(err, fs.ErrNotExist) || statErr == nil && info.IsDir() {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("reading %s: %w", path, err)
+}
+
+// blobAt returns file's content at rev, and whether rev has it as a file.
 func blobAt(repoRoot, rev, file string) ([]byte, bool, error) {
 	tree, err := exec.Command("git", "-C", repoRoot, "ls-tree", "-z", rev, "--", file).Output()
 	if err != nil {
 		return nil, false, fmt.Errorf("listing %s at %s: %w", file, rev, err)
 	}
-	if len(tree) == 0 {
+	// <mode> SP <type> SP <object> TAB <file> NUL
+	fields := strings.Fields(strings.SplitN(string(tree), "\t", 2)[0])
+	if len(fields) != 3 || fields[1] != "blob" {
 		return nil, false, nil
 	}
-	// <mode> SP <type> SP <object> TAB <file> NUL
-	fields := strings.Fields(strings.SplitN(string(tree), "	", 2)[0])
 	blob, err := exec.Command("git", "-C", repoRoot, "cat-file", "blob", fields[2]).Output()
 	if err != nil {
 		return nil, false, fmt.Errorf("reading %s at %s: %w", file, rev, err)
