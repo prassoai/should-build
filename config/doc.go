@@ -57,8 +57,9 @@
 //
 // # Defaults applied by Canonicalize
 //
-// unknown_file: error rejects unclassified non-Go files before selection.
-// Go files are evaluated through dependency graphs and explicit patterns.
+// unknown_file: error rejects unclassified files before selection.
+// When a Go dependency target is configured, Go files bypass this fallback
+// and are evaluated through dependency graphs and explicit patterns.
 // unknown_file defaults to "trigger_all" when the field is empty or absent.
 // This is the safe default: unrecognized files rebuild everything.
 //

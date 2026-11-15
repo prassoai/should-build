@@ -986,3 +986,25 @@ func TestGoFilesDoNotReachUnknownPolicy(t *testing.T) {
 		})
 	}
 }
+
+// TestGoFilesWithoutGoTargetsFollowUnknownPolicy prevents skipping unclaimed
+// Go inputs when no configured target supplies Go dependency analysis.
+func TestGoFilesWithoutGoTargetsFollowUnknownPolicy(t *testing.T) {
+	for _, policy := range []string{"error", "trigger_all", "ignore"} {
+		t.Run(policy, func(t *testing.T) {
+			cfg := mustCfg(t, config.Global{}, policy, map[string]config.Target{
+				"web": {Lang: "none", Include: []string{"web/**"}},
+			})
+			results, err := Evaluate(cfg, []string{"tools/main.go"}, nil, nil)
+			if policy == "error" {
+				if err == nil || err.Error() != "classify changed files: unclassified inputs: tools/main.go" || results != nil {
+					t.Fatalf("got %v, %v; want unclassified Go input error", results, err)
+				}
+				return
+			}
+			if err != nil || len(results) != 1 || results[0].Build != (policy == "trigger_all") {
+				t.Fatalf("got %v, %v; want build=%v", results, err, policy == "trigger_all")
+			}
+		})
+	}
+}
