@@ -248,16 +248,18 @@ func needsBase(repoRoot, baseRef string, ctx build.Context, changed []string) (b
 		if strings.HasSuffix(file, "_test.go") || strings.HasSuffix(file, ".go") && slices.ContainsFunc(strings.Split(filepath.Dir(file), "/"), ignoredDir) {
 			continue
 		}
+		if !strings.HasSuffix(file, ".go") {
+			if _, err := os.Lstat(filepath.Join(repoRoot, file)); err != nil {
+				return true, nil
+			}
+			continue
+		}
 		head, found, err := headContent(filepath.Join(repoRoot, file))
 		if err != nil {
 			return false, err
 		}
-		isGo := strings.HasSuffix(file, ".go")
-		switch {
-		case found && (!isGo || compiles(ctx, file, head) == nil):
+		if found && compiles(ctx, file, head) == nil {
 			continue
-		case !found && !isGo:
-			return true, nil
 		}
 		base, found, err := blobAt(repoRoot, baseRef, file)
 		if err != nil {
