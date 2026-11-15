@@ -84,23 +84,27 @@ func Evaluate(cfg *config.Config, changed []string, deps map[string][]string, on
 	return propagateTriggers(cfg, filtered, depSets, orphan, results), nil
 }
 
-// orphanSet returns the files that no target accounts for: not matched by
+// orphanSet returns files that no target accounts for: not matched by
 // global trigger_all, not matched by any target's include patterns, and not
 // present in any target's dependency graph. Only orphans fall through to the
-// unknown_file policy. A file claimed by even one target is scoped to that
+// unknown_file policy. When a Go target is configured, Go files are covered
+// by dependency analysis; absence from every graph means no target consumes
+// them. A file claimed by even one target is scoped to that
 // target (plus its triggers), so a change touching one service's files no
 // longer rebuilds every target. Target excludes deliberately do not count: an
 // exclude suppresses a single target's reaction to a file, not the global
 // knowledge of what the file affects.
 func orphanSet(cfg *config.Config, files []string, depSets map[string]map[string]struct{}) map[string]struct{} {
 	includes := make(map[string][]string, len(cfg.Targets))
+	hasGoTarget := false
 	for name, t := range cfg.Targets {
+		hasGoTarget = hasGoTarget || t.HasDepGraph()
 		includes[name] = expandPatterns(t.Include, name)
 	}
 
 	orphan := make(map[string]struct{})
 	for _, f := range files {
-		if !claimed(cfg, includes, depSets, f) {
+		if !(hasGoTarget && strings.HasSuffix(f, ".go")) && !claimed(cfg, includes, depSets, f) {
 			orphan[f] = struct{}{}
 		}
 	}

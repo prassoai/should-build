@@ -137,26 +137,31 @@ checkout, which should be the head, and one loaded from the base commit, which
 `should-build` checks out into a temporary directory. The base graph is what
 attributes a deleted file to the targets that imported it, so a deletion needs
 no hand-maintained directory pattern. It is best effort: a target that does not
-exist at the base contributes nothing there. The base for a `GOOS` is loaded only
+exist at the base contributes nothing there. The base for an OS/architecture combination is loaded only
 when a changed Go file compiled for it at the base and no longer does, because
 it was deleted or its name, build constraint or cgo import now excludes it, or
 when a non-Go file that may have been embedded is deleted. Any other way a
 target stops compiling a file changes a file the head graph attributes, so a
 change that only edits files skips the base checkout.
 
-Both graphs are computed for the Go toolchain's own `GOOS`, so a file behind a
-build constraint for another system, such as `prompt_darwin.go` on a Linux
-runner, is in neither. A target built for several systems lists them, and its
-graph becomes the union of one graph per entry:
+Both graphs inherit the Go toolchain's `GOOS` and `GOARCH`. Declare the systems
+and architectures a target builds for so files such as `prompt_darwin.go` or
+`prompt_arm64.go` are analyzed for their consumers. The graph unions all
+combinations of the declared values; an omitted dimension inherits the go
+command's environment.
 
 ```yaml
 targets:
   cli:
     path: ./cmd/cli
     goos: [linux, darwin]
+    goarch: [amd64, arm64]
 ```
 
-Targets sharing a `GOOS` share one `go list` per revision.
+Targets sharing an OS/architecture combination share one `go list` per revision.
+The analyzer also respects `CGO_ENABLED` and build tags from `GOFLAGS`; use the
+same settings as the build. With cgo enabled, `CgoFiles` are included alongside
+ordinary Go source files.
 
 ### Outputs
 
@@ -265,7 +270,8 @@ targets:
 
 With `unknown_file: error`, any changed file with no declared owner fails
 classification (exit code 2), lists the unclassified paths, and emits no build
-selection. Globally ignored files are allowed. Ownership includes all targets'
+selection. Go files are exempt when a Go dependency target is configured.
+Globally ignored files are allowed. Ownership includes all targets'
 include patterns and dependency graphs, plus global trigger patterns.
 Target exclusions, explicit selection, and `--target` do not suppress this check.
 
@@ -367,7 +373,13 @@ Steps 5 and 6 are the repo-wide fallbacks — they select a target without
 naming any of its inputs. A target with `selection: explicit` skips both; see
 [Selection modes](#selection-modes).
 
-A file is an **orphan** only if *no* target accounts for it — it matches no
+When at least one target uses Go dependency analysis, Go files never reach
+`unknown_file`: their consumers are determined by dependency analysis and explicit
+patterns. A Go file outside all target graphs needs no ownership rule and does
+not trigger unrelated builds. Without a Go dependency target, Go files follow
+the same unknown-file policy as other files.
+
+A file subject to that policy is an **orphan** only if *no* target accounts for it — it matches no
 target's `include`, is in no target's dependency graph, and matches no
 `global.trigger_all` pattern. The `unknown_file: trigger_all` safety net fires
 for orphans alone. A file that some target depends on is not an orphan, so it

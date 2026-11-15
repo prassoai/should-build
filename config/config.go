@@ -56,14 +56,15 @@ type Global struct {
 // this target. global.ignore, exclude, include, the dependency graph and
 // incoming triggers behave identically in both modes.
 //
-// GOOS lists the operating systems the target is built for. Its dependency
-// graph is the union of one graph per entry, so a file compiled only for one
-// of them, such as foo_darwin.go, still selects the target. Empty means the
-// single graph of the analyzer's own GOOS.
+// GOOS and GOARCH list the operating systems and architectures the target
+// is built for. Its graph is the union across their combinations, so a file
+// such as foo_darwin.go or foo_arm64.go still selects its consumers. An
+// omitted dimension inherits the go command's environment.
 type Target struct {
 	Path      string   `yaml:"path"`
 	Lang      string   `yaml:"lang"`
 	GOOS      []string `yaml:"goos"`
+	GOARCH    []string `yaml:"goarch"`
 	Selection string   `yaml:"selection"`
 	Include   []string `yaml:"include"`
 	Exclude   []string `yaml:"exclude"`
@@ -159,12 +160,17 @@ func canonicalizeTarget(name string, t Target) (Target, error) {
 		}
 	}
 
-	if len(t.GOOS) > 0 && !t.HasDepGraph() {
-		return Target{}, fmt.Errorf("target %q: goos needs a %s path", name, LangGo)
-	}
-	for i, goos := range t.GOOS {
-		if goos == "" || slices.Contains(t.GOOS[:i], goos) {
-			return Target{}, fmt.Errorf("target %q: goos entries must be distinct and non-empty, got %q", name, t.GOOS)
+	for _, dimension := range []struct {
+		name   string
+		values []string
+	}{{"goos", t.GOOS}, {"goarch", t.GOARCH}} {
+		if len(dimension.values) > 0 && !t.HasDepGraph() {
+			return Target{}, fmt.Errorf("target %q: %s needs a %s path", name, dimension.name, LangGo)
+		}
+		for i, value := range dimension.values {
+			if value == "" || slices.Contains(dimension.values[:i], value) {
+				return Target{}, fmt.Errorf("target %q: %s entries must be distinct and non-empty, got %q", name, dimension.name, dimension.values)
+			}
 		}
 	}
 

@@ -151,37 +151,37 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 // goDeps returns each Go target's dependency files: the union, over the
-// target's GOOS list, of the working tree's graph and baseRef's graph. The
+// target's platforms, of the working tree's graph and baseRef's graph. The
 // working tree sees added and modified files; only the base still knows which
 // targets used a file the change deletes, so it loads only when needsBase says
-// it can matter. Targets sharing a GOOS share one load of each revision.
+// it can matter. Targets sharing a platform share one load of each revision.
 func goDeps(cfg *config.Config, repoRoot, baseRef string, changed []string) (map[string][]string, error) {
-	platforms := make(map[string][]string)
+	platforms := make(map[platform][]string)
 	for _, target := range cfg.Targets {
 		if !target.HasDepGraph() {
 			continue
 		}
-		for _, goos := range platformsOf(target) {
-			platforms[goos] = append(platforms[goos], target.Path)
+		for _, platform := range platformsOf(target) {
+			platforms[platform] = append(platforms[platform], target.Path)
 		}
 	}
 	type loaded struct {
-		goos  string
-		graph map[string][]string
-		err   error
+		platform platform
+		graph    map[string][]string
+		err      error
 	}
 	results := make(chan loaded)
-	for goos, paths := range platforms {
+	for platform, paths := range platforms {
 		go func() {
-			graph, err := platformDeps(repoRoot, baseRef, goos, paths, changed)
-			results <- loaded{goos, graph, err}
+			graph, err := platformDeps(repoRoot, baseRef, platform, paths, changed)
+			results <- loaded{platform, graph, err}
 		}()
 	}
-	graphs := make(map[string]map[string][]string, len(platforms))
+	graphs := make(map[platform]map[string][]string, len(platforms))
 	var errs []error
 	for range platforms {
 		r := <-results
-		graphs[r.goos] = r.graph
+		graphs[r.platform] = r.graph
 		errs = append(errs, r.err)
 	}
 	if err := errors.Join(errs...); err != nil {
@@ -192,29 +192,32 @@ func goDeps(cfg *config.Config, repoRoot, baseRef string, changed []string) (map
 		if !target.HasDepGraph() {
 			continue
 		}
-		for _, goos := range platformsOf(target) {
-			deps[name] = append(deps[name], graphs[goos][target.Path]...)
+		for _, platform := range platformsOf(target) {
+			deps[name] = append(deps[name], graphs[platform][target.Path]...)
 		}
 	}
 	return deps, nil
 }
 
-// platformDeps loads paths for one GOOS ("" for the analyzer's own) from the
-// working tree and, when needsBase says it can matter, from baseRef, and unions each path's two graphs.
-func platformDeps(repoRoot, baseRef, goos string, paths, changed []string) (map[string][]string, error) {
+// platformDeps unions each path's head and base graphs for one platform.
+// The base is loaded only when needsBase says it can matter.
+func platformDeps(repoRoot, baseRef string, platform platform, paths, changed []string) (map[string][]string, error) {
 	analyzer := depgraph.Go{}
-	if goos != "" {
-		analyzer.Env = []string{"GOOS=" + goos}
+	if platform.goos != "" {
+		analyzer.Env = append(analyzer.Env, "GOOS="+platform.goos)
+	}
+	if platform.goarch != "" {
+		analyzer.Env = append(analyzer.Env, "GOARCH="+platform.goarch)
 	}
 	slices.Sort(paths)
 	paths = slices.Compact(paths)
 	head, err := analyzer.DepsAll(repoRoot, paths)
 	if err != nil {
-		return nil, fmt.Errorf("loading %s working tree: %w", cmp.Or(goos, "default GOOS"), err)
+		return nil, fmt.Errorf("loading %s working tree: %w", platform, err)
 	}
 	ctx, err := analyzer.Context(repoRoot)
 	if err != nil {
-		return nil, fmt.Errorf("loading %s build context: %w", cmp.Or(goos, "default GOOS"), err)
+		return nil, fmt.Errorf("loading %s build context: %w", platform, err)
 	}
 	needed, err := needsBase(repoRoot, baseRef, ctx, changed)
 	if err != nil {
@@ -225,7 +228,7 @@ func platformDeps(repoRoot, baseRef, goos string, paths, changed []string) (map[
 	}
 	base, err := analyzer.DepsAt(repoRoot, baseRef, paths)
 	if err != nil {
-		return nil, fmt.Errorf("loading %s at %s: %w", cmp.Or(goos, "default GOOS"), baseRef, err)
+		return nil, fmt.Errorf("loading %s at %s: %w", platform, baseRef, err)
 	}
 	graph := make(map[string][]string, len(paths))
 	for _, path := range paths {
@@ -281,10 +284,10 @@ func ignoredDir(name string) bool {
 // errExcluded reports a Go file that ctx's build leaves out.
 var errExcluded = errors.New("excluded from build")
 
-// compiles reports whether content, as file, is a pure Go file ctx compiles:
+// compiles reports whether content, as file, is a Go file ctx compiles:
 // nil if so, errExcluded if ctx leaves it out, and the parse error for a file
-// too malformed to tell. build.Context.MatchFile does not check cgo, and the
-// graph holds only pure Go files, so importing "C" counts as excluded.
+// too malformed to tell. build.Context.MatchFile does not check cgo, so
+// importing "C" must also respect the context's cgo setting.
 func compiles(ctx build.Context, file string, content []byte) error {
 	ctx.OpenFile = func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(content)), nil }
 	match, err := ctx.MatchFile(filepath.Dir(file), filepath.Base(file))
@@ -298,7 +301,7 @@ func compiles(ctx build.Context, file string, content []byte) error {
 	if err != nil {
 		return fmt.Errorf("parsing %s: %w", file, err)
 	}
-	if slices.ContainsFunc(f.Imports, func(spec *ast.ImportSpec) bool { return spec.Path.Value == `"C"` }) {
+	if !ctx.CgoEnabled && slices.ContainsFunc(f.Imports, func(spec *ast.ImportSpec) bool { return spec.Path.Value == `"C"` }) {
 		return errExcluded
 	}
 	return nil
@@ -335,13 +338,32 @@ func blobAt(repoRoot, rev, file string) ([]byte, bool, error) {
 	return blob, true, nil
 }
 
-// platformsOf returns the GOOS values whose graphs make up target's
-// dependencies; "" is the analyzer's own GOOS.
-func platformsOf(target config.Target) []string {
-	if len(target.GOOS) == 0 {
-		return []string{""}
+// Empty platform dimensions inherit the go command's environment.
+type platform struct {
+	goos, goarch string
+}
+
+func (p platform) String() string {
+	return cmp.Or(p.goos, "default GOOS") + "/" + cmp.Or(p.goarch, "default GOARCH")
+}
+
+// platformsOf returns the product of the target's operating systems and
+// architectures so every declared build contributes its dependency graph.
+func platformsOf(target config.Target) []platform {
+	systems, architectures := target.GOOS, target.GOARCH
+	if len(systems) == 0 {
+		systems = []string{""}
 	}
-	return target.GOOS
+	if len(architectures) == 0 {
+		architectures = []string{""}
+	}
+	var platforms []platform
+	for _, goos := range systems {
+		for _, goarch := range architectures {
+			platforms = append(platforms, platform{goos, goarch})
+		}
+	}
+	return platforms
 }
 
 func writeJSON(stdout, stderr io.Writer, results []eval.Result, verbose bool) int {

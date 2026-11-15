@@ -31,6 +31,7 @@ type goPackage struct {
 	Match      []string `json:"Match"`
 	Deps       []string `json:"Deps"`
 	Dir        string   `json:"Dir"`
+	CgoFiles   []string `json:"CgoFiles"`
 	GoFiles    []string `json:"GoFiles"`
 	EmbedFiles []string `json:"EmbedFiles"`
 	Standard   bool     `json:"Standard"`
@@ -212,7 +213,7 @@ func load(repoRoot string, importPaths []string, tolerant bool, env ...string) (
 			if pkg.Standard || pkg.Dir == "" {
 				continue
 			}
-			for _, file := range append(pkg.GoFiles, pkg.EmbedFiles...) {
+			for _, file := range slices.Concat(pkg.GoFiles, pkg.CgoFiles, pkg.EmbedFiles) {
 				rel, err := filepath.Rel(absRoot, filepath.Join(pkg.Dir, file))
 				if err != nil || outsideRoot(rel) {
 					continue
