@@ -137,26 +137,31 @@ checkout, which should be the head, and one loaded from the base commit, which
 `should-build` checks out into a temporary directory. The base graph is what
 attributes a deleted file to the targets that imported it, so a deletion needs
 no hand-maintained directory pattern. It is best effort: a target that does not
-exist at the base contributes nothing there. The base for a `GOOS` is loaded only
+exist at the base contributes nothing there. The base for an OS/architecture combination is loaded only
 when a changed Go file compiled for it at the base and no longer does, because
 it was deleted or its name, build constraint or cgo import now excludes it, or
 when a non-Go file that may have been embedded is deleted. Any other way a
 target stops compiling a file changes a file the head graph attributes, so a
 change that only edits files skips the base checkout.
 
-Both graphs are computed for the Go toolchain's own `GOOS`, so a file behind a
-build constraint for another system, such as `prompt_darwin.go` on a Linux
-runner, is in neither. A target built for several systems lists them, and its
-graph becomes the union of one graph per entry:
+Both graphs inherit the Go toolchain's `GOOS` and `GOARCH`. Declare the systems
+and architectures a target builds for so files such as `prompt_darwin.go` or
+`prompt_arm64.go` are analyzed for their consumers. The graph unions all
+combinations of the declared values; an omitted dimension inherits the go
+command's environment.
 
 ```yaml
 targets:
   cli:
     path: ./cmd/cli
     goos: [linux, darwin]
+    goarch: [amd64, arm64]
 ```
 
-Targets sharing a `GOOS` share one `go list` per revision.
+Targets sharing an OS/architecture combination share one `go list` per revision.
+The analyzer also respects `CGO_ENABLED` and build tags from `GOFLAGS`; use the
+same settings as the build. With cgo enabled, `CgoFiles` are included alongside
+ordinary Go source files.
 
 ### Outputs
 

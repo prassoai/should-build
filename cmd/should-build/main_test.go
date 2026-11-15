@@ -749,6 +749,7 @@ targets:
 	gitRun(t, dir, "commit", "-qm", "delete")
 
 	for _, head := range []string{edited, gitSHA(t, dir, "HEAD")} {
+		gitRun(t, dir, "checkout", "--detach", head)
 		var stdout, stderr bytes.Buffer
 		if code := run([]string{"--json", "--repo", dir, base, head}, &stdout, &stderr); code != 0 {
 			t.Fatalf("exit %d: %s", code, stderr.String())
@@ -885,7 +886,8 @@ func TestNeedsBase(t *testing.T) {
 		{linux, []string{"lib/testdata/golden.txt"}, true},
 		{linux, []string{"lib/moved.go"}, true},
 		{darwin, []string{"lib/moved.go"}, false},
-		{linux, []string{"lib/cgo.go"}, true},
+		{[]string{"GOOS=linux", "CGO_ENABLED=0"}, []string{"lib/cgo.go"}, true},
+		{[]string{"GOOS=linux", "CGO_ENABLED=1"}, []string{"lib/cgo.go"}, false},
 		{linux, []string{"lib/broken.go"}, true},
 		{linux, []string{"lib/replaced.go"}, true},
 		{integration, []string{"lib/integration_gone.go"}, true},
@@ -939,6 +941,103 @@ func TestRunDisconnectedGoCommand(t *testing.T) {
 		}
 		if len(results) != 2 || results[0].Build != imported || results[1].Build {
 			t.Fatalf("imported=%v: %+v", imported, results)
+		}
+	}
+}
+
+// TestRunGOARCHSelectsPlatformFiles requires a target declaring goarch to be
+// selected by a file compiled only for one of those architectures, whether the
+// change edits or deletes it, while a target built only for the analyzer's
+// own architecture is not. Without per-platform graphs, foo_arm64.go is in no
+// graph on amd64 and its consumers would be skipped.
+func TestRunGOARCHSelectsPlatformFiles(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init")
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+	gitRun(t, dir, "config", "user.name", "Test")
+	writeFile(t, filepath.Join(dir, "should-build.yaml"), `
+unknown_file: error
+targets:
+  cli:
+    path: ./cmd/cli
+    goarch: [amd64, arm64]
+  server:
+    path: ./cmd/server
+    goarch: [amd64]
+`)
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/test\n\ngo 1.23\n")
+	writeFile(t, filepath.Join(dir, "cmd/cli/main.go"), "package main\nimport _ \"example.com/test/lib\"\nfunc main() {}\n")
+	writeFile(t, filepath.Join(dir, "cmd/server/main.go"), "package main\nimport _ \"example.com/test/lib\"\nfunc main() {}\n")
+	writeFile(t, filepath.Join(dir, "lib/lib.go"), "package lib\n")
+	writeFile(t, filepath.Join(dir, "lib/prompt_arm64.go"), "package lib\n")
+	writeFile(t, filepath.Join(dir, "lib/prompt_386.go"), "package lib\n")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "base")
+	base := gitSHA(t, dir, "HEAD")
+	writeFile(t, filepath.Join(dir, "lib/prompt_arm64.go"), "package lib\nconst Changed = true\n")
+	gitRun(t, dir, "commit", "-qam", "edit")
+	edited := gitSHA(t, dir, "HEAD")
+	gitRun(t, dir, "rm", "-q", "lib/prompt_arm64.go")
+	gitRun(t, dir, "commit", "-qm", "delete")
+
+	for _, head := range []string{edited, gitSHA(t, dir, "HEAD")} {
+		gitRun(t, dir, "checkout", "--detach", head)
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"--json", "--repo", dir, base, head}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		var results []eval.Result
+		if err := json.Unmarshal(stdout.Bytes(), &results); err != nil {
+			t.Fatal(err)
+		}
+		want := []eval.Result{
+			{Target: "cli", Build: true, Files: []eval.FileMatch{{Path: "lib/prompt_arm64.go", Reason: "go-dep"}}},
+			{Target: "server", Files: []eval.FileMatch{}},
+		}
+		if !reflect.DeepEqual(results, want) {
+			t.Fatalf("%s: got %+v, want %+v", head, results, want)
+		}
+	}
+}
+
+// TestRunCgoChangesSelectConsumer requires cgo source edits and deletions to
+// select only their consumer, including when only the base graph retains it.
+func TestRunCgoChangesSelectConsumer(t *testing.T) {
+	t.Setenv("CGO_ENABLED", "1")
+	dir := t.TempDir()
+	gitRun(t, dir, "init")
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+	gitRun(t, dir, "config", "user.name", "Test")
+	writeFile(t, filepath.Join(dir, "should-build.yaml"), "unknown_file: error\ntargets:\n  api:\n    path: ./cmd/api\n  worker:\n    path: ./cmd/worker\n")
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/test\n\ngo 1.23\n")
+	writeFile(t, filepath.Join(dir, "cmd/api/main.go"), "package main\nimport _ \"example.com/test/lib\"\nfunc main() {}\n")
+	writeFile(t, filepath.Join(dir, "cmd/worker/main.go"), "package main\nfunc main() {}\n")
+	writeFile(t, filepath.Join(dir, "lib/lib.go"), "package lib\n")
+	writeFile(t, filepath.Join(dir, "lib/cgo.go"), "package lib\nimport \"C\"\n")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "base")
+	base := gitSHA(t, dir, "HEAD")
+	for _, deleted := range []bool{false, true} {
+		if deleted {
+			gitRun(t, dir, "rm", "lib/cgo.go")
+		} else {
+			writeFile(t, filepath.Join(dir, "lib/cgo.go"), "package lib\nimport \"C\"\nconst Changed = true\n")
+		}
+		gitRun(t, dir, "commit", "-qam", "change")
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"--json", "--repo", dir, base, "HEAD"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		var results []eval.Result
+		if err := json.Unmarshal(stdout.Bytes(), &results); err != nil {
+			t.Fatal(err)
+		}
+		want := []eval.Result{
+			{Target: "api", Build: true, Files: []eval.FileMatch{{Path: "lib/cgo.go", Reason: "go-dep"}}},
+			{Target: "worker", Files: []eval.FileMatch{}},
+		}
+		if !reflect.DeepEqual(results, want) {
+			t.Fatalf("deleted=%v: got %+v, want %+v", deleted, results, want)
 		}
 	}
 }

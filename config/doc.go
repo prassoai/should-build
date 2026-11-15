@@ -36,12 +36,10 @@
 //
 // # Target platforms
 //
-// A Go target's dependency graph is computed for the analyzer's own GOOS, so a
-// file behind a build constraint for another system is invisible to it. A
-// target built for several systems lists them in goos, and its graph becomes
-// the union of one graph per entry: a CLI shipped for linux and darwin is
-// selected by a change to foo_darwin.go. goos is rejected on a target without a
-// Go path, and its entries must be distinct.
+// Go graphs inherit the go command's GOOS and GOARCH unless the target lists
+// goos or goarch values. The graph unions all declared OS/architecture
+// combinations, so foo_darwin.go and foo_arm64.go select their consumers.
+// Both lists require a Go path and distinct, non-empty entries.
 //
 // # Target triggers
 //

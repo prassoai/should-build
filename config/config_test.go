@@ -516,3 +516,26 @@ func TestParseGOOS(t *testing.T) {
 		}
 	}
 }
+
+// TestParseGOARCH requires goarch to be kept as written on a Go target, and
+// rejected where it cannot mean anything: on a target with no Go graph, or
+// with an empty or repeated entry that would silently load the wrong set of
+// platforms.
+func TestParseGOARCH(t *testing.T) {
+	cfg, err := Parse([]byte("targets:\n  cli:\n    path: ./cmd/cli\n    goarch: [amd64, arm64]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Targets["cli"].GOARCH; len(got) != 2 || got[0] != "amd64" || got[1] != "arm64" {
+		t.Fatalf("GOARCH = %q, want [amd64 arm64]", got)
+	}
+	for _, target := range []string{
+		"lang: none\n    include: [\"web/**\"]\n    goarch: [amd64]",
+		"path: ./cmd/cli\n    goarch: [amd64, amd64]",
+		"path: ./cmd/cli\n    goarch: [\"\"]",
+	} {
+		if _, err := Parse([]byte("targets:\n  cli:\n    " + target + "\n")); err == nil || !strings.Contains(err.Error(), "goarch") {
+			t.Errorf("%s: want a goarch error, got %v", target, err)
+		}
+	}
+}

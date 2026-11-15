@@ -3,7 +3,7 @@
 //
 // The Go analyzer uses "go list -json -deps" to resolve the full transitive
 // dependency graph, then returns file paths relative to the repo root. Both
-// Go source files (GoFiles) and //go:embed assets (EmbedFiles) are returned,
+// Go source files (GoFiles and CgoFiles) and //go:embed assets are returned,
 // so a change to an embedded file rebuilds the binaries that embed it.
 // Go.DepsAll resolves multiple package patterns in one invocation while keeping
 // each pattern's dependency closure separate.
@@ -18,7 +18,8 @@
 // in the checkout, and one outside the repository is turned off.
 //
 // Go.Env adds variables to the go command's environment; GOOS=darwin loads the
-// files a darwin build compiles instead of the host's. Go.Context returns the
+// files a darwin build compiles instead of the host's. GOARCH and CGO_ENABLED
+// likewise control architecture and cgo source selection. Go.Context returns the
 // go/build context the go command uses under that environment, including
 // build tags from GOFLAGS, so a caller can ask build.Context.MatchFile which
 // files the graphs would compile.
